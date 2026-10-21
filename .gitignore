@@ -1,1 +1,17 @@
-iiyi_dataset/
+# Model cache / large files
+cache/
+offload_tmp/
+
+# Log files of `case_filter.py` and `case_rewrite.py`
+logs/
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
