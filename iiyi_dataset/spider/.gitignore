@@ -1,7 +1,4 @@
-# ignore `msedgedriver.exe`, which is used in `click_seemore.py`
-msedgedriver.exe
-
-# ignore results of running `click_seemore.py` on iiyi.com (推荐案例、精选案例和最新案例)
+# ignore results of running `crawl_case_list.py` on iiyi.com (推荐案例、精选案例和最新案例)
 recommended_cases.json
 selected_cases.json
 newest_cases.json
@@ -12,6 +9,8 @@ newest_cases.json
 raw_images/
 succeeded_cases.json
 failed_cases.json
+temp.json
+temp.jsonl
 
 # ignore results of running `../case_filter.py` on `succeeded_cases.json`
 filtered_images/
