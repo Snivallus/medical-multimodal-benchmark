@@ -20,6 +20,7 @@ Usage::
     python bench/freeze_data.py                    # sync images, write manifest
     python bench/freeze_data.py --prune            # also drop unreferenced images
     python bench/freeze_data.py --dry-run          # report what would change
+    python bench/freeze_data.py --verify           # check a fresh clone
 """
 
 import argparse
@@ -208,6 +209,44 @@ def build_manifest(data_dir, images, corpus_path, dry_run):
     return manifest
 
 
+def verify_manifest(data_dir):
+    """Check every file the manifest lists against its recorded sha256."""
+
+    manifest_path = Path(data_dir) / "MANIFEST.json"
+
+    if not manifest_path.exists():
+        print(f"[error] no manifest at {manifest_path}")
+        return 1
+
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    checked, bad = 0, []
+
+    for name, meta in manifest["files"].items():
+        path = Path(data_dir) / name
+        checked += 1
+        if not path.exists() or sha256_of(path) != meta["sha256"]:
+            bad.append(name)
+
+    for entry in manifest["images"]:
+        path = Path(data_dir) / "images" / entry["path"]
+        checked += 1
+        if not path.exists() or sha256_of(path) != entry["sha256"]:
+            bad.append(entry["path"])
+
+    print(f"checked {checked} file(s) against {manifest_path}")
+
+    if bad:
+        print(f"[error] {len(bad)} mismatch(es):")
+        for name in bad[:10]:
+            print(f"  {name}")
+        return 1
+
+    print(f"ok: {manifest['counts']['items']} items, {manifest['counts']['images']} images")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Freeze bench/data into a self-contained dataset.")
     parser.add_argument("--data", default=str(DATA), help="frozen dataset directory")
@@ -215,11 +254,19 @@ def main():
     parser.add_argument("--image-root", default=str(IMAGE_ROOT), help="crawl output with the images")
     parser.add_argument("--prune", action="store_true", help="delete images no record references")
     parser.add_argument("--dry-run", action="store_true", help="report changes without writing")
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="only check the directory against MANIFEST.json (no crawl output needed)",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data)
     data_images = data_dir / "images"
     corpus_path = Path(args.corpus)
+
+    if args.verify:
+        raise SystemExit(verify_manifest(data_dir))
 
     items = load_jsonl(data_dir / "items.jsonl")
     conflicts = load_jsonl(data_dir / "conflict_items.jsonl")

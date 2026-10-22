@@ -151,16 +151,10 @@ python bench/evaluate.py --mode items --model Qwen/Qwen3-VL-8B-Instruct \
 ```
 
 图片默认从 `bench/data/images/` 读；想用全量图（或换了目录）就加 `--image-root`。
-用 `bench/data/MANIFEST.json` 里的 sha256 核对数据是否与实验时一致：
+用 `MANIFEST.json` 核对数据与实验时是否一致（不需要语料，也不需要 key）：
 
 ```bash
-python - <<'EOF'
-import hashlib, json, pathlib
-man = json.load(open("bench/data/MANIFEST.json", encoding="utf-8"))
-for name, meta in man["files"].items():
-    got = hashlib.sha256(pathlib.Path("bench/data", name).read_bytes()).hexdigest()
-    print(("ok  " if got == meta["sha256"] else "BAD ") + name)
-EOF
+python bench/freeze_data.py --verify      # 逐个文件比对 sha256
 ```
 
 ---
