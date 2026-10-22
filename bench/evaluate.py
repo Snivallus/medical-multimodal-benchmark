@@ -1,0 +1,512 @@
+"""Evaluate a multimodal model on the built items.
+
+Three variants are derived from each item, so the same item is asked in the same
+way and only the evidence changes:
+
+* ``photo``   — images + de-identified text (the main condition)
+* ``text_b``  — de-identified text only (masked images, the 主指标 control)
+* ``text_a``  — the original case text with its imaging conclusions intact, images
+  masked (the strict, proposal-literal control)
+
+Per item and variant the model selects one or more option ids; the score is the
+partial-credit rule from :func:`medical.score_selection`. The headline number is
+
+    delta_acc_i = score(photo) - score(text_b)
+
+averaged over items, plus the main-diagnosis hit rate.
+
+Any OpenAI-compatible vision endpoint works, so the same script runs against a
+local vLLM server and against a hosted API:
+
+    python bench/evaluate.py --model Qwen3-VL-30B-A3B-Instruct-A --limit 10
+    python bench/evaluate.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3-VL-8B-Instruct
+"""
+
+import argparse
+import base64
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import llm
+import medical
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ITEMS = REPO_ROOT / "bench" / "data" / "items.jsonl"
+CONFLICTS = REPO_ROOT / "bench" / "data" / "conflict_items.jsonl"
+IMAGE_ROOT = REPO_ROOT / "bench" / "data" / "images"
+CORPUS = REPO_ROOT / "iiyi_dataset" / "results" / "case_with_images.json"
+RESULTS = REPO_ROOT / "bench" / "results" / "eval_results.jsonl"
+
+# Fields that make up the original, verbatim case text of variant ``text_a``.
+ORIGINAL_FIELDS = ["主诉", "现病史", "既往史", "个人史", "家族史", "查体", "辅助检查"]
+
+SYSTEM_PROMPT = "你是临床医生，正在参加一次病例诊断测试。只输出 JSON。"
+
+PROMPT = """请根据下面提供的信息，选出所有成立的诊断（可多选，至少选一个）。
+
+【病例信息】
+{stem}
+
+【选项】
+{options}
+
+只输出 JSON：{{"selected": ["A"], "reason": "一句话"}}
+"""
+
+CONFLICT_PROMPT = """下面是一段病例文本及其给出的诊断，以及配给这段文本的医学影像。
+
+请判断：这些影像是否支持文本给出的诊断？
+
+A = 支持：影像与文本的诊断一致
+B = 反驳：影像与文本的诊断相互矛盾
+C = 信息不足：仅凭这些影像无法判断文本的诊断是否成立
+
+只输出 JSON：{{"verdict": "A", "why": "20 字内"}}
+
+【文本给出的诊断】{claimed}
+
+【病例文本】
+{stem}
+"""
+
+# The conflict task uses letters; the dataset stores the Chinese label.
+CONFLICT_LABELS = {"A": "支持", "B": "反驳", "C": "信息不足"}
+
+
+def load_items(path, limit=None):
+    """Load items from the JSONL file."""
+
+    items = []
+
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            items.append(json.loads(line))
+            if limit is not None and len(items) >= limit:
+                break
+
+    return items
+
+
+def load_corpus_text():
+    """Return ``{case_idx: original case text}`` for variant ``text_a``."""
+
+    if not CORPUS.exists():
+        return {}
+
+    with open(CORPUS, encoding="utf-8") as f:
+        cases = json.load(f)["cases"]
+
+    texts = {}
+
+    for case in cases:
+        parts = []
+        for field in ORIGINAL_FIELDS:
+            value = medical.normalize_whitespace(str(case.get(field, "")))
+            if value:
+                parts.append(f"【{field}】{value}")
+        texts[case["case_idx"]] = "\n".join(parts)
+
+    return texts
+
+
+def image_payload(paths, image_root=None):
+    """Encode images as data URLs for an OpenAI-compatible vision request."""
+
+    root = Path(image_root) if image_root else IMAGE_ROOT
+    payload = []
+
+    for relative in paths:
+
+        file_path = root / relative
+
+        if not file_path.exists():
+            print(f"[warn] missing image: {file_path}")
+            continue
+
+        data = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        suffix = file_path.suffix.lower().lstrip(".") or "jpeg"
+        mime = "jpeg" if suffix in ("jpg", "jpeg") else suffix
+
+        payload.append({"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{data}"}})
+
+    return payload
+
+
+def build_variant_messages(item, variant, original_text):
+    """Build the chat messages for one variant."""
+
+    options = "\n".join(f"{option['id']}. {option['text']}" for option in item["options"])
+
+    if variant == "text_a":
+        # The strict control: the original text, imaging conclusions included.
+        stem = original_text or item["stem"]
+    else:
+        stem = item["stem"]
+
+    text = PROMPT.format(stem=stem, options=options)
+
+    if variant == "photo":
+        content = [{"type": "text", "text": text}]
+        content += image_payload(item["images"])
+    else:
+        content = [{"type": "text", "text": text}]
+
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": content},
+    ]
+
+
+def parse_selection(text):
+    """Extract the selected option ids from the model answer."""
+
+    data = llm.extract_json(text) or {}
+
+    selected = data.get("selected") or data.get("answers") or []
+
+    if isinstance(selected, str):
+        selected = [selected]
+
+    cleaned = []
+
+    for value in selected:
+        if not isinstance(value, str):
+            continue
+        # Accept "A", "A.", "A. 右膝…" and multi-letter answers like "A,C".
+        for part in value.replace("，", ",").split(","):
+            letter = part.strip().strip("。.").upper()[:1]
+            # Only real option ids: "中".isalpha() is True, so a bare isalpha()
+            # would let non-Latin characters through as answers.
+            if letter in "ABCDEF" and letter not in cleaned:
+                cleaned.append(letter)
+
+    # A reply without JSON sometimes still starts with a letter list.
+    if not cleaned:
+        head = (text or "").strip()[:40].upper()
+        for letter in "ABCDEF":
+            if head.startswith(letter) and letter not in cleaned:
+                cleaned.append(letter)
+
+    return cleaned
+
+
+def evaluate_item(item, variants, model, original_text, retries=3):
+    """Evaluate one item on every requested variant."""
+
+    correct_ids = item["correct_ids"]
+    valid_ids = {option["id"] for option in item["options"]}
+
+    # The main diagnosis has to be located by text, because option ids are in
+    # shuffled order and the first correct id is not necessarily the main one.
+    main_option_id = next(
+        (
+            option["id"]
+            for option in item["options"]
+            if option["text"] == item["main_diagnosis"]
+        ),
+        None,
+    )
+
+    records = []
+
+    for variant in variants:
+
+        messages = build_variant_messages(item, variant, original_text)
+        selected = []
+        error = None
+
+        for attempt in range(retries):
+            try:
+                answer = llm.chat(
+                    messages,
+                    model=model,
+                    temperature=0.0,
+                    max_tokens=256,
+                    timeout=(10, 300),
+                )
+                selected = parse_selection(answer)
+                # Ignore ids that do not exist in this item; they would be
+                # counted as false positives.
+                selected = [option_id for option_id in selected if option_id in valid_ids]
+                error = None
+                break
+            except Exception as exc:
+                error = str(exc)
+                time.sleep(2 ** attempt)
+
+        score = medical.score_selection(correct_ids, selected) if selected else 0.0
+        hit = medical.main_diagnosis_hit(main_option_id, selected)
+
+        records.append(
+            {
+                "item_id": item["item_id"],
+                "case_id": item["case_id"],
+                "variant": variant,
+                "model": model,
+                "selected": selected,
+                "score": score,
+                "main_hit": hit,
+                # A call that never succeeded must not be counted as a wrong
+                # answer: it would silently deflate the score of that variant.
+                "excluded": error is not None,
+                "error": error,
+            }
+        )
+
+    return records
+
+
+def summarise(records):
+    """Aggregate scores and print the headline numbers."""
+
+    # Failed calls are reported separately, never averaged in.
+    failed = sum(1 for record in records if record.get("excluded"))
+    records = [record for record in records if not record.get("excluded")]
+
+    by_variant = {}
+
+    for record in records:
+        by_variant.setdefault(record["variant"], []).append(record["score"])
+
+    print("\nvariant     n    mean score   main-diagnosis hit")
+
+    for variant, scores in sorted(by_variant.items()):
+        hits = [r["main_hit"] for r in records if r["variant"] == variant]
+        mean = sum(scores) / len(scores)
+        print(f"{variant:<10} {len(scores):3d}    {mean:.3f}          {sum(hits)/len(hits):.3f}")
+
+    if failed:
+        print(f"excluded (call failed): {failed}")
+
+    # Per-item delta between the photo condition and the masked-text condition.
+    photo = {r["item_id"]: r["score"] for r in records if r["variant"] == "photo"}
+    text = {r["item_id"]: r["score"] for r in records if r["variant"] == "text_b"}
+
+    shared = sorted(set(photo) & set(text))
+
+    if shared:
+        deltas = [photo[item_id] - text[item_id] for item_id in shared]
+        mean_delta = sum(deltas) / len(deltas)
+        positive = sum(1 for d in deltas if d > 0)
+        zero = sum(1 for d in deltas if d == 0)
+        negative = sum(1 for d in deltas if d < 0)
+
+        print(f"\ndelta_acc (photo - text_b): {mean_delta:+.3f}")
+        print(f"items with delta>0: {positive}/{len(shared)} | delta=0: {zero} | delta<0: {negative}")
+
+
+def evaluate_conflict(record, model, retries=3):
+    """Ask one model whether the images support the diagnosis claimed by the text."""
+
+    content = [
+        {
+            "type": "text",
+            "text": CONFLICT_PROMPT.format(
+                stem=record["stem"],
+                claimed=record["claimed_diagnosis"],
+            ),
+        }
+    ]
+    content += image_payload(record["images"])
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": content},
+    ]
+
+    verdict = None
+    error = None
+
+    for attempt in range(retries):
+        try:
+            answer = llm.chat(
+                messages,
+                model=model,
+                temperature=0.0,
+                max_tokens=128,
+                timeout=(10, 300),
+            )
+            data = llm.extract_json(answer) or {}
+            raw = str(data.get("verdict") or answer or "").strip().upper()[:1]
+            verdict = CONFLICT_LABELS.get(raw)
+            error = None
+            break
+        except Exception as exc:
+            error = str(exc)
+            time.sleep(2 ** attempt)
+
+    return {
+        "conflict_id": record["conflict_id"],
+        "source_item": record["source_item"],
+        "label": record["label"],
+        "model": model,
+        "predicted": verdict,
+        "correct": verdict == record["label"],
+        "excluded": verdict is None,
+        "error": error,
+    }
+
+
+def summarise_conflicts(records):
+    """Print accuracy and the per-label confusion matrix."""
+
+    labels = ["支持", "反驳", "信息不足"]
+    matrix = {label: {other: 0 for other in labels} for label in labels}
+    failed = 0
+    scored = 0
+    correct = 0
+
+    for record in records:
+
+        if record.get("excluded"):
+            failed += 1
+            continue
+
+        scored += 1
+        matrix[record["label"]][record["predicted"]] += 1
+        correct += 1 if record["correct"] else 0
+
+    if not scored:
+        print("\nno conflict answer could be scored")
+        return
+
+    print(f"\nconflict accuracy: {correct/scored:.3f} ({correct}/{scored})")
+    print(f"excluded (call failed): {failed}")
+
+    header = "label\\pred  " + "  ".join(f"{label:>6}" for label in labels)
+    print("\n" + header)
+
+    for label in labels:
+        row = "  ".join(f"{matrix[label][other]:>6}" for other in labels)
+        print(f"{label:<10} {row}")
+
+
+def main():
+    global IMAGE_ROOT
+
+    parser = argparse.ArgumentParser(description="Evaluate a model on the built items.")
+    parser.add_argument("--items", default=str(ITEMS), help="items JSONL")
+    parser.add_argument("--conflicts", default=None, help="conflict items JSONL (--mode conflicts)")
+    parser.add_argument("--output", default=str(RESULTS), help="per-answer results JSONL")
+    parser.add_argument("--model", default=None, help="model id (defaults to LLM_MODEL)")
+    parser.add_argument("--base-url", default=None, help="override LLM_BASE_URL")
+    parser.add_argument("--api-key", default=None, help="override LLM_API_KEY")
+    parser.add_argument(
+        "--variants",
+        default="photo,text_b",
+        help="comma separated: photo, text_b, text_a",
+    )
+    parser.add_argument(
+        "--mode",
+        default="items",
+        choices=["items", "conflicts"],
+        help="items: multiple-answer diagnosis task; conflicts: three-class image/text check",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="evaluate the first N items")
+    parser.add_argument(
+        "--image-root",
+        default=str(IMAGE_ROOT),
+        help="directory holding the case image folders (defaults to bench/data/images)",
+    )
+    args = parser.parse_args()
+
+    IMAGE_ROOT = Path(args.image_root)
+
+    if args.base_url:
+        os.environ["LLM_BASE_URL"] = args.base_url
+    if args.api_key:
+        os.environ["LLM_API_KEY"] = args.api_key
+
+    if args.mode == "conflicts":
+        return run_conflicts(args)
+
+    variants = [name.strip() for name in args.variants.split(",") if name.strip()]
+    unknown = set(variants) - {"photo", "text_b", "text_a"}
+
+    if unknown:
+        raise SystemExit(f"unknown variant(s): {sorted(unknown)}")
+
+    items = load_items(args.items, args.limit)
+    originals = load_corpus_text() if "text_a" in variants else {}
+
+    if not items:
+        raise SystemExit(f"no items in {args.items}")
+
+    all_records = []
+    started = time.time()
+
+    for index, item in enumerate(items, 1):
+        records = evaluate_item(
+            item,
+            variants,
+            args.model,
+            originals.get(item["case_id"], ""),
+        )
+        all_records.extend(records)
+
+        flags = " ".join(f"{r['variant']}={r['score']:.2f}" for r in records)
+        print(f"[{index:3d}/{len(items)}] {item['item_id']} | {flags}")
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output, "w", encoding="utf-8") as f:
+        for record in all_records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    summarise(all_records)
+    print(f"\nresults -> {output} | {time.time() - started:.0f}s")
+
+
+def run_conflicts(args):
+    """Evaluate the three-class 图文冲突 task."""
+
+    path = args.conflicts if args.conflicts else str(CONFLICTS)
+
+    records = []
+
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+
+    if args.limit is not None:
+        records = records[: args.limit]
+
+    if not records:
+        raise SystemExit(f"no conflict records in {path}; run bench/build_conflicts.py first")
+
+    print(f"conflict records: {len(records)} | model: {args.model or llm.model_name()}")
+
+    results = []
+    started = time.time()
+
+    for index, record in enumerate(records, 1):
+        result = evaluate_conflict(record, args.model)
+        results.append(result)
+
+        if index % 5 == 0 or index == len(records):
+            print(f"  [{index}/{len(records)}] {record['conflict_id']} -> {result['predicted']}")
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    summarise_conflicts(results)
+    print(f"\nresults -> {output} | {time.time() - started:.0f}s")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,2 +1,3 @@
-# results
-results/
+# The 790 MB image corpus stays local; the three case JSONs are tracked because
+# the benchmark pipeline needs them to rebuild or audit the dataset.
+results/images/

@@ -1,0 +1,3 @@
+# Runtime dependencies of the bench pipeline (screening, building, evaluation).
+# The crawler keeps its own list in iiyi_dataset/requirements.txt.
+requests>=2.31

@@ -1,17 +1,24 @@
 # Model cache / large files
 cache/
 offload_tmp/
+.tmp/
 
 # Log files of `case_filter.py` and `case_rewrite.py`
 logs/
 
 # Virtual environments
 venv/
+.env
 .env/
 .venv/
+bench/.env
 
 # Python bytecode
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pylibs/
+
+# Evaluation runs (bench/data itself is the frozen dataset and is tracked)
+bench/results/
