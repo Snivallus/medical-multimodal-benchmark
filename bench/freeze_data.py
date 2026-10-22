@@ -255,6 +255,11 @@ def main():
     parser.add_argument("--prune", action="store_true", help="delete images no record references")
     parser.add_argument("--dry-run", action="store_true", help="report changes without writing")
     parser.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="re-hash the files already in the data directory without copying from the crawl",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="only check the directory against MANIFEST.json (no crawl output needed)",
@@ -283,9 +288,16 @@ def main():
         if uid and uid not in uids:
             uids.append(uid)
 
-    copied, skipped, missing, pruned = copy_images(
-        images, Path(args.image_root), data_images, args.prune, args.dry_run
-    )
+    if args.manifest_only:
+        # The images in the data directory are already the ones to ship (they may
+        # have been re-downloaded at full size); only re-hash them.
+        missing = [relative for relative in images if not (data_images / relative).exists()]
+        copied, skipped, pruned = 0, len(images) - len(missing), 0
+    else:
+        copied, skipped, missing, pruned = copy_images(
+            images, Path(args.image_root), data_images, args.prune, args.dry_run
+        )
+
     exported = write_cases(cases_index, uids, data_dir / "cases.jsonl", args.dry_run)
     manifest = build_manifest(data_dir, images, corpus_path, args.dry_run)
 

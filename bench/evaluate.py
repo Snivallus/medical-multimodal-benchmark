@@ -115,6 +115,30 @@ def load_corpus_text():
     return texts
 
 
+def image_mime(data, path):
+    """Guess the image type from the file signature, not from the extension.
+
+    The crawl output stores everything as ``.jpg`` even when the bytes are PNG
+    (147 of the 181 shipped images), and a data URL with the wrong type is
+    decoded differently — or rejected — by a strict inference server.
+    """
+
+    if data.startswith(b"\xff\xd8"):
+        return "jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"GIF8"):
+        return "gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "webp"
+    if data.startswith(b"BM"):
+        return "bmp"
+
+    suffix = Path(path).suffix.lower().lstrip(".") or "jpeg"
+
+    return "jpeg" if suffix in ("jpg", "jpeg") else suffix
+
+
 def image_payload(paths, image_root=None):
     """Encode images as data URLs for an OpenAI-compatible vision request."""
 
@@ -129,9 +153,9 @@ def image_payload(paths, image_root=None):
             print(f"[warn] missing image: {file_path}")
             continue
 
-        data = base64.b64encode(file_path.read_bytes()).decode("ascii")
-        suffix = file_path.suffix.lower().lstrip(".") or "jpeg"
-        mime = "jpeg" if suffix in ("jpg", "jpeg") else suffix
+        raw = file_path.read_bytes()
+        mime = image_mime(raw[:16], file_path)
+        data = base64.b64encode(raw).decode("ascii")
 
         payload.append({"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{data}"}})
 
