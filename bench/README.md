@@ -173,6 +173,7 @@ bench/
 ├── build_items.py      # 步骤 2：出题
 ├── build_conflicts.py  # 步骤 3：图文冲突配对
 ├── freeze_data.py      # 步骤 4：打包（图片 + 原始病例 + 清单）
+├── refresh_images.py   # 从病例页重下原图（旧爬虫存的是 150 px 缩略图）
 ├── evaluate.py         # 步骤 5：三变体评测
 ├── data/               # 冻结数据集（随仓库分发）
 │   ├── items.jsonl             # 100 题
