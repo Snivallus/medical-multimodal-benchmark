@@ -76,19 +76,36 @@ C = 信息不足：仅凭这些影像无法判断文本的诊断是否成立
 CONFLICT_LABELS = {"A": "支持", "B": "反驳", "C": "信息不足"}
 
 
-def load_items(path, limit=None):
-    """Load items from the JSONL file."""
+def load_items(path, limit=None, exclude=None):
+    """Load items from the JSONL file, optionally skipping some ids.
+
+    ``exclude`` is how the caption-contaminated items are dropped for the
+    clean-image setting: the images themselves can be re-cropped later, but the
+    exclusion list belongs to the experiment, not to the dataset.
+    """
 
     items = []
+    skipped = 0
 
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            items.append(json.loads(line))
+
+            item = json.loads(line)
+
+            if exclude and item["item_id"] in exclude:
+                skipped += 1
+                continue
+
+            items.append(item)
+
             if limit is not None and len(items) >= limit:
                 break
+
+    if skipped:
+        print(f"[info] excluded {skipped} item(s)", flush=True)
 
     return items
 
@@ -434,6 +451,11 @@ def main():
     )
     parser.add_argument("--limit", type=int, default=None, help="evaluate the first N items")
     parser.add_argument(
+        "--exclude",
+        default="",
+        help="comma separated item ids to skip (the items whose image still prints the answer)",
+    )
+    parser.add_argument(
         "--image-root",
         default=str(IMAGE_ROOT),
         help="directory holding the case image folders (defaults to bench/data/images)",
@@ -456,7 +478,11 @@ def main():
     if unknown:
         raise SystemExit(f"unknown variant(s): {sorted(unknown)}")
 
-    items = load_items(args.items, args.limit)
+    items = load_items(
+        args.items,
+        args.limit,
+        exclude={name.strip() for name in args.exclude.split(",") if name.strip()},
+    )
     originals = load_corpus_text() if "text_a" in variants else {}
 
     if not items:

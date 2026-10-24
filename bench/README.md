@@ -192,6 +192,7 @@ bench/
 ├── strip_captions.py   # 步骤 4b：裁掉印在图版下方的期刊图注
 ├── evaluate.py         # 步骤 5：三变体评测
 ├── IMAGE_TRIAGE.md     # 分诊产出的人工复核清单（A/B/C 三档）
+├── RESULTS.md          # 评测报告框架（两套口径、待填的表与结论）
 ├── data/               # 冻结数据集（随仓库分发）
 │   ├── items.jsonl             # 100 题
 │   ├── conflict_items.jsonl    # 299 条三分类冲突题
