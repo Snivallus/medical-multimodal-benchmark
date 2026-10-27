@@ -59,14 +59,41 @@ def load_jsonl(path):
     return records
 
 
-def sha256_of(path):
-    """Hex sha256 of a file, read in chunks because images can be several MB."""
+TEXT_SUFFIXES = (".jsonl", ".json", ".md", ".txt")
 
+
+def sha256_of(path):
+    """Hex sha256 of a file, read in chunks because images can be several MB.
+
+    Text files are hashed with their line endings normalised to ``\\n``. Without
+    that the hash depends on how the checkout happened: git rewrites line endings
+    on Windows (``core.autocrlf``) and leaves them alone elsewhere, so the same
+    commit produced two different hashes and ``--verify`` failed on the clone.
+    """
+
+    path = Path(path)
+    normalize = path.suffix.lower() in TEXT_SUFFIXES
     digest = hashlib.sha256()
+    carry = b""
 
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
-            digest.update(chunk)
+            if not normalize:
+                digest.update(chunk)
+                continue
+
+            data = carry + chunk
+            # A CRLF split across two chunks would otherwise be missed.
+            if data.endswith(b"\r"):
+                carry = b"\r"
+                data = data[:-1]
+            else:
+                carry = b""
+
+            digest.update(data.replace(b"\r\n", b"\n"))
+
+    if carry:
+        digest.update(carry)
 
     return digest.hexdigest()
 
@@ -152,7 +179,7 @@ def write_cases(cases_index, uids, path, dry_run):
         return 0
 
     if not dry_run:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
             for record in records:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
