@@ -208,19 +208,8 @@ def chat(
     raise RuntimeError(f"LLM request failed after {retries} attempts: {last_error}")
 
 
-def extract_json(text):
-    """Pull the first complete JSON object out of a model answer.
-
-    A greedy ``\\{.*\\}`` match breaks as soon as the answer contains two objects
-    or a brace inside a string, so the object is scanned with brace counting that
-    respects string literals.
-    """
-
-    text = (text or "").replace("```json", "").replace("```", "").strip()
-    start = text.find("{")
-
-    if start < 0:
-        return None
+def _scan_json_object(text, start):
+    """Return ``(blob, end)`` for the object beginning at ``start``."""
 
     depth = 0
     in_string = False
@@ -247,20 +236,60 @@ def extract_json(text):
             depth -= 1
 
             if depth == 0:
-                blob = text[start:index + 1]
+                return text[start:index + 1], index + 1
 
-                try:
-                    return json.loads(blob)
-                except json.JSONDecodeError:
-                    # Trailing commas are the most common breakage.
-                    repaired = re.sub(r",\s*([}\]])", r"\1", blob)
+    return None, None
 
-                    try:
-                        return json.loads(repaired)
-                    except json.JSONDecodeError:
-                        return None
 
-    return None
+def _load_json_object(blob):
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError:
+        # Trailing commas are the most common breakage.
+        repaired = re.sub(r",\s*([}\]])", r"\1", blob)
+
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            return None
+
+
+def extract_json(text, last=False):
+    """Pull a complete JSON object out of a model answer.
+
+    A greedy ``\\{.*\\}`` match breaks as soon as the answer contains two objects
+    or a brace inside a string, so candidates are scanned with brace counting that
+    respects string literals.
+
+    ``last=True`` returns the last parseable object. A thinking model often
+    echoes the prompt's JSON example inside its reasoning; the real answer is the
+    final object, not the first one.
+    """
+
+    text = (text or "").replace("```json", "").replace("```", "").strip()
+    found = []
+    start = text.find("{")
+
+    while start >= 0:
+        blob, end = _scan_json_object(text, start)
+
+        if blob is None:
+            # An unmatched brace in prose; keep looking for a later object.
+            start = text.find("{", start + 1)
+            continue
+
+        data = _load_json_object(blob)
+
+        if data is not None:
+            found.append(data)
+            start = text.find("{", end)
+        else:
+            start = text.find("{", start + 1)
+
+    if not found:
+        return None
+
+    return found[-1] if last else found[0]
 
 
 def chat_json(messages, model=None, **kwargs):

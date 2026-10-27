@@ -26,6 +26,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -264,10 +265,39 @@ def build_variant_messages(item, variant, original_text):
     ]
 
 
+THINK_OPEN_RE = re.compile(r"<think\b", re.I)
+THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.S | re.I)
+ANSWER_BLOCK_RE = re.compile(r"<answer\b[^>]*>(.*?)</answer\s*>", re.S | re.I)
+
+
+def visible_answer(text):
+    """Drop a thinking block and keep the model's final answer.
+
+    GLM-4.1V-Thinking writes ``<think>...</think><answer>{...}</answer>``. Its
+    reasoning often quotes the prompt's JSON example, so parsing the raw reply
+    can score that example instead of the actual answer. An opening ``<think>``
+    without a closing tag means the reply was cut off before the answer.
+    """
+
+    text = text or ""
+
+    if THINK_OPEN_RE.search(text) and not re.search(r"</think\s*>", text, re.I):
+        return ""
+
+    text = THINK_BLOCK_RE.sub("", text)
+    match = ANSWER_BLOCK_RE.search(text)
+
+    if match:
+        return match.group(1)
+
+    return text
+
+
 def parse_selection(text):
     """Extract the selected option ids from the model answer."""
 
-    data = llm.extract_json(text) or {}
+    text = visible_answer(text)
+    data = llm.extract_json(text, last=True) or {}
 
     selected = data.get("selected") or data.get("answers") or []
 
@@ -306,7 +336,8 @@ def parse_verdict(text):
     recognisable verdict counts as a parse failure.
     """
 
-    data = llm.extract_json(text) or {}
+    text = visible_answer(text)
+    data = llm.extract_json(text, last=True) or {}
 
     raw = data.get("verdict")
 
