@@ -20,8 +20,8 @@
 | **B · 去图注** | ≤85 | 人工裁掉图注后的图版；裁不掉或仍是报告截图的题剔除 | 影像信息本身有没有增益，这是要写进论文的指标 |
 
 口径 A 不需要任何额外准备，`bench/data/images` 现在就是。口径 B 依赖人工裁剪的结果：
-裁完跑 `freeze_data.py --manifest-only`，`triage_images.py --report-only` 重算分档，
-再用 `--exclude` 剔掉仍泄露的题（清单以那时的 `IMAGE_TRIAGE.md` 为准）。
+裁完跑 `freeze_data.py` 重算哈希，再按 `IMAGE_TRIAGE.md` 人工更新分档，
+最后用 `--exclude` 剔掉仍泄露的题（清单以那时的 `IMAGE_TRIAGE.md` 为准）。
 
 **为什么要两套**：只有把"同一批题、同一套提示词、只差图片版本"的两个 `Δacc` 摆在一起，
 才能说清楚旧结果是数据问题还是模型问题。只报口径 B，审稿人会问"你怎么知道原来不是模型读不出图"。
@@ -120,9 +120,8 @@
 python bench/evaluate.py --variants photo,text_b,text_a --model Qwen3.8-Max \
     --output bench/results/eval_A.jsonl
 
-# 口径 B：人工裁完图注、重新计哈希、重算分档之后，剔掉仍泄露的题
-python bench/freeze_data.py --manifest-only
-python bench/triage_images.py --report-only
+# 口径 B：人工裁完图注、重新计哈希、按 IMAGE_TRIAGE.md 更新分档之后，剔掉仍泄露的题
+python bench/freeze_data.py
 python bench/evaluate.py --variants photo,text_b,text_a --model Qwen3.8-Max \
     --exclude "<IMAGE_TRIAGE.md 第一节里的 C 档 item_id，逗号分隔>" \
     --output bench/results/eval_B.jsonl
@@ -144,15 +143,15 @@ python bench/report_eval.py
 
 **已完成**
 
-- [x] 100 题构造、299 条冲突题构造（`build_items.py` / `build_conflicts.py`）；人工清理图片后为 85 题 / 254 条
-- [x] 图片全尺寸重下（79 例 / 137 张，`refresh_images.py`）
-- [x] 181 张图逐张分诊（`triage_images.py`，`IMAGE_TRIAGE.md`），当时 45 A / 4 B / 51 C
-- [x] 自动裁图注跑通并复验（`strip_captions.py`），**但已回退**——边界不精确，改为人工裁剪
+- [x] 100 题构造、299 条冲突题构造（`build_items.py` / `build_conflicts.py`，脚本已移除）；人工清理图片后为 85 题 / 254 条
+- [x] 图片全尺寸重下（79 例 / 137 张，`refresh_images.py`，已移除）
+- [x] 181 张图逐张分诊（`triage_images.py`，已移除；记录见 `IMAGE_TRIAGE.md`），当时 45 A / 4 B / 51 C
+- [x] 自动裁图注跑通并复验（`strip_captions.py`，已移除），**但已回退**——边界不精确，改为人工裁剪
 
 **待办**
 
 - [ ] 人工裁剪 51 道 C 档题的图注（清单见 `IMAGE_TRIAGE.md` 第一节，附图上文字转录）
-- [ ] 裁完跑 `freeze_data.py --manifest-only` + `triage_images.py --report-only` 重算分档
+- [ ] 裁完跑 `freeze_data.py` 重算哈希，并按 `IMAGE_TRIAGE.md` 更新分档
 - [ ] 口径 A、口径 B 各跑一次全量（85 题 × 3 变体 ≈ 255 次调用 / 50 分钟 / 50 万 tokens）
 - [ ] 冲突题 254 条评测
 - [ ] `report_eval.py`：汇总 + bootstrap 置信区间

@@ -1,7 +1,3 @@
-# Runtime dependencies of the bench pipeline (screening, building, evaluation).
-# The crawler keeps its own list in iiyi_dataset/requirements.txt.
+# Runtime dependency of the evaluation and of the manifest check.
+# The crawler kept its own list in iiyi_dataset/requirements.txt (not shipped).
 requests>=2.31
-
-# Only needed to crop the printed figure legend off the crawled plates
-# (strip_captions.py); the rest of the pipeline reads image bytes as they are.
-pillow>=10

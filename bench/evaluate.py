@@ -556,7 +556,7 @@ def run_conflicts(args):
         records = records[: args.limit]
 
     if not records:
-        raise SystemExit(f"no conflict records in {path}; run bench/build_conflicts.py first")
+        raise SystemExit(f"no conflict records in {path}")
 
     print(f"conflict records: {len(records)} | model: {args.model or llm.model_name()}")
 

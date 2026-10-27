@@ -1,43 +1,42 @@
-"""Package the frozen dataset into ``bench/data/``.
+"""Rebuild and verify ``bench/data/MANIFEST.json``.
 
-The pipeline writes JSONL into ``bench/data/`` while it runs, but the images live
-next to the crawl output (790 MB in total) and nothing records which slice of them
-belongs to the shipped items. This script closes that gap and makes the directory
-self-contained:
+``bench/data/`` is the frozen dataset that ships with the repository: the items,
+the conflict pairs, the source case records and the images they reference. The
+directory is maintained in place (hand-cropped images, removed items), so the only
+part left to do mechanically is to keep the manifest in step with it:
 
-1. every image referenced by ``items.jsonl`` or ``conflict_items.jsonl`` is copied
-   from the crawl output into ``bench/data/images/<case>/``;
-2. the source case records of the shipped items are exported to ``cases.jsonl``,
-   so a reviewer or a report can read the original text without the corpus;
-3. ``MANIFEST.json`` records counts, sizes and sha256 of every shipped file, which
-   is what tells a fresh server clone that it has the dataset the experiment used.
+* counts, sizes and sha256 of every shipped file, which is what tells a fresh
+  clone that it has the dataset the experiment used;
+* ``--prune`` deletes images that no record references any more;
+* ``--verify`` checks a clone against the manifest, no key and no corpus needed.
 
-Re-run it after the human review changes ``items.jsonl``; ``--prune`` additionally
-deletes images that are no longer referenced.
+Everything here reads and writes ``bench/data/`` only. The pipeline that produced
+the items, and the crawl corpus it read from, are not part of the repository, so
+there is nothing to import from them and nothing to copy in.
+
+Run it after any hand edit of the data directory, otherwise the manifest and the
+items no longer describe the same dataset.
 
 Usage::
 
-    python bench/freeze_data.py                    # sync images, write manifest
-    python bench/freeze_data.py --prune            # also drop unreferenced images
-    python bench/freeze_data.py --dry-run          # report what would change
-    python bench/freeze_data.py --verify           # check a fresh clone
+    python bench/freeze_data.py                 # recompute the manifest
+    python bench/freeze_data.py --prune         # also drop unreferenced images
+    python bench/freeze_data.py --dry-run       # report changes without writing
+    python bench/freeze_data.py --verify        # check a fresh clone
 """
 
 import argparse
 import hashlib
 import json
-import shutil
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA = REPO_ROOT / "bench" / "data"
-CORPUS = REPO_ROOT / "iiyi_dataset" / "results" / "case_with_images.json"
-IMAGE_ROOT = REPO_ROOT / "iiyi_dataset" / "results" / "images"
 
-# Files of the frozen dataset, in manifest order. ``cases.jsonl`` and the manifest
-# itself are written here; the rest are produced by the pipeline.
-DATA_FILES = ["items.jsonl", "conflict_items.jsonl", "candidates.jsonl", "items_rejected.jsonl"]
+# Files of the frozen dataset, in manifest order. ``images/`` is hashed separately
+# below, and ``MANIFEST.json`` describes the rest without hashing itself.
+DATA_FILES = ["items.jsonl", "conflict_items.jsonl", "cases.jsonl"]
 
 
 def load_jsonl(path):
@@ -98,21 +97,6 @@ def sha256_of(path):
     return digest.hexdigest()
 
 
-def load_corpus(path):
-    """Index the crawl corpus by uid, the key the pipeline uses everywhere."""
-
-    with open(path, encoding="utf-8") as f:
-        corpus = json.load(f)
-
-    cases = corpus["cases"] if isinstance(corpus, dict) else corpus
-    index = {}
-
-    for case in cases:
-        index[f"with_images:{case['case_idx']}"] = case
-
-    return index
-
-
 def referenced_images(records):
     """Union of image paths over all records, order-stable for a stable manifest."""
 
@@ -123,67 +107,6 @@ def referenced_images(records):
             seen.add(relative)
 
     return sorted(seen)
-
-
-def copy_images(images, image_root, data_images, prune, dry_run):
-    """Copy referenced images into the data directory, optionally pruning extras."""
-
-    copied, skipped, missing = 0, 0, []
-
-    for relative in images:
-        source = Path(image_root) / relative
-        target = data_images / relative
-
-        if not source.exists():
-            missing.append(relative)
-            continue
-
-        if target.exists() and target.stat().st_size == source.stat().st_size:
-            skipped += 1
-            continue
-
-        copied += 1
-
-        if not dry_run:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-
-    pruned = 0
-
-    if prune and data_images.exists():
-        keep = {str(Path(relative)) for relative in images}
-
-        for path in sorted(data_images.rglob("*")):
-            if path.is_file() and str(path.relative_to(data_images)) not in keep:
-                pruned += 1
-                if not dry_run:
-                    path.unlink()
-                    if not any(path.parent.iterdir()):
-                        path.parent.rmdir()
-
-    return copied, skipped, missing, pruned
-
-
-def write_cases(cases_index, uids, path, dry_run):
-    """Export the original case records of the shipped items.
-
-    The crawl corpus is not part of the repository, so on a clone without it
-    ``cases_index`` is empty. Writing in that case would truncate the tracked
-    export and silently take ``text_a`` with it, so nothing is written and the
-    existing file is kept.
-    """
-
-    records = [cases_index[uid] for uid in uids if uid in cases_index]
-
-    if not records:
-        return 0
-
-    if not dry_run:
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            for record in records:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    return len(records)
 
 
 def count_lines(path):
@@ -198,12 +121,35 @@ def count_lines(path):
         return sum(1 for line in f if line.strip())
 
 
-def build_manifest(data_dir, images, corpus_path, dry_run):
+def prune_images(images, data_images, dry_run):
+    """Delete images under ``data_images`` that no record references."""
+
+    if not Path(data_images).exists():
+        return 0
+
+    keep = {str(Path(relative)) for relative in images}
+    pruned = 0
+
+    for path in sorted(Path(data_images).rglob("*")):
+        if not path.is_file() or str(path.relative_to(data_images)) in keep:
+            continue
+
+        pruned += 1
+
+        if not dry_run:
+            path.unlink()
+            if not any(path.parent.iterdir()):
+                path.parent.rmdir()
+
+    return pruned
+
+
+def build_manifest(data_dir, images, dry_run):
     """Collect counts and hashes of everything the directory ships."""
 
     files = {}
 
-    for name in DATA_FILES + ["cases.jsonl"]:
+    for name in DATA_FILES:
         path = data_dir / name
         if path.exists():
             files[name] = {"bytes": path.stat().st_size, "sha256": sha256_of(path)}
@@ -219,17 +165,9 @@ def build_manifest(data_dir, images, corpus_path, dry_run):
 
     manifest = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "source": {
-            "corpus": str(corpus_path.relative_to(REPO_ROOT)).replace("\\", "/")
-            if corpus_path.is_relative_to(REPO_ROOT)
-            else str(corpus_path),
-            "corpus_sha256": sha256_of(corpus_path) if corpus_path.exists() else None,
-        },
         "counts": {
             "items": count_lines(data_dir / "items.jsonl"),
             "conflict_items": count_lines(data_dir / "conflict_items.jsonl"),
-            "candidates": count_lines(data_dir / "candidates.jsonl"),
-            "items_rejected": count_lines(data_dir / "items_rejected.jsonl"),
             "cases": count_lines(data_dir / "cases.jsonl"),
             "images": len(image_entries),
         },
@@ -284,74 +222,66 @@ def verify_manifest(data_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Freeze bench/data into a self-contained dataset.")
+    parser = argparse.ArgumentParser(
+        description="Recompute or verify bench/data/MANIFEST.json."
+    )
     parser.add_argument("--data", default=str(DATA), help="frozen dataset directory")
-    parser.add_argument("--corpus", default=str(CORPUS), help="crawl output with the source cases")
-    parser.add_argument("--image-root", default=str(IMAGE_ROOT), help="crawl output with the images")
     parser.add_argument("--prune", action="store_true", help="delete images no record references")
     parser.add_argument("--dry-run", action="store_true", help="report changes without writing")
     parser.add_argument(
         "--manifest-only",
         action="store_true",
-        help="re-hash the files already in the data directory without copying from the crawl",
+        help="kept for old notes: recomputing the manifest is now the default",
     )
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="only check the directory against MANIFEST.json (no crawl output needed)",
+        help="only check the directory against MANIFEST.json (no image scan)",
     )
     args = parser.parse_args()
 
     data_dir = Path(args.data)
-    data_images = data_dir / "images"
-    corpus_path = Path(args.corpus)
 
     if args.verify:
         raise SystemExit(verify_manifest(data_dir))
 
     items = load_jsonl(data_dir / "items.jsonl")
-    conflicts = load_jsonl(data_dir / "conflict_items.jsonl")
 
     if not items:
-        raise SystemExit(f"no items in {data_dir / 'items.jsonl'}; run bench/build_items.py first")
+        raise SystemExit(f"no items in {data_dir / 'items.jsonl'}")
 
-    cases_index = load_corpus(corpus_path) if corpus_path.exists() else {}
+    conflicts = load_jsonl(data_dir / "conflict_items.jsonl")
     images = referenced_images(items + conflicts)
+    data_images = data_dir / "images"
 
-    uids = []
-    for record in items:
-        uid = record.get("uid")
-        if uid and uid not in uids:
-            uids.append(uid)
+    missing = [relative for relative in images if not (data_images / relative).exists()]
+    pruned = prune_images(images, data_images, args.dry_run) if args.prune else 0
+    manifest = build_manifest(data_dir, images, args.dry_run)
 
-    if args.manifest_only:
-        # The images in the data directory are already the ones to ship (they may
-        # have been re-downloaded at full size); only re-hash them.
-        missing = [relative for relative in images if not (data_images / relative).exists()]
-        copied, skipped, pruned = 0, len(images) - len(missing), 0
-    else:
-        copied, skipped, missing, pruned = copy_images(
-            images, Path(args.image_root), data_images, args.prune, args.dry_run
-        )
-
-    exported = write_cases(cases_index, uids, data_dir / "cases.jsonl", args.dry_run)
-    manifest = build_manifest(data_dir, images, corpus_path, args.dry_run)
-
-    if not exported:
-        exported = count_lines(data_dir / "cases.jsonl")
-
-    print(f"items={len(items)} conflicts={len(conflicts)} cases={exported} images={len(images)}")
-    print(f"images copied={copied} unchanged={skipped} pruned={pruned}")
+    print(
+        f"items={manifest['counts']['items']} conflicts={manifest['counts']['conflict_items']} "
+        f"cases={manifest['counts']['cases']} images={manifest['counts']['images']}"
+    )
+    print(f"images pruned={pruned}")
     print(f"dataset size={sum(entry['bytes'] for entry in manifest['images']) / 1048576:.1f} MB (images)")
 
+    # ``cases.jsonl`` ships the original case text behind ``text_a``. Nothing can
+    # regenerate it any more (the corpus is not in the repository), so a stale row
+    # set shows up here instead of as a failed evaluation run.
+    known = {record.get("case_idx") for record in load_jsonl(data_dir / "cases.jsonl")}
+    absent = [item["item_id"] for item in items if item.get("case_id") not in known]
+
+    if absent:
+        print(
+            f"[warn] {len(absent)} item(s) have no row in cases.jsonl; "
+            f"variant text_a would fail on them: {', '.join(absent[:5])}"
+        )
+
     if missing:
-        print(f"[error] {len(missing)} referenced image(s) missing under {args.image_root}:")
+        print(f"[error] {len(missing)} referenced image(s) missing under {data_images}:")
         for relative in missing[:10]:
             print(f"  {relative}")
         raise SystemExit(1)
-
-    if not cases_index:
-        print(f"[info] no crawl corpus at {corpus_path}; kept the existing cases.jsonl as is")
 
 
 if __name__ == "__main__":

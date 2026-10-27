@@ -1,14 +1,8 @@
 {
-  "generated_at": "2026-10-27T19:45:59+0800",
-  "source": {
-    "corpus": "iiyi_dataset/results/case_with_images.json",
-    "corpus_sha256": "08337348e1fb8e8a5bf4e09a6f102e332b8b706df87e29033cb6b1737b66e412"
-  },
+  "generated_at": "2026-10-27T20:47:46+0800",
   "counts": {
     "items": 85,
     "conflict_items": 254,
-    "candidates": 700,
-    "items_rejected": 66,
     "cases": 85,
     "images": 155
   },
@@ -20,14 +14,6 @@
     "conflict_items.jsonl": {
       "bytes": 338808,
       "sha256": "8d38435d9a9c106a0acf90ba8b9cc0676c57fbc13128b1c9d487be4d9577afa0"
-    },
-    "candidates.jsonl": {
-      "bytes": 292480,
-      "sha256": "34033303081edeb0653bba48b7e7c3268fd49e71cb2667a7fe6df3dea09e0f5f"
-    },
-    "items_rejected.jsonl": {
-      "bytes": 252518,
-      "sha256": "08a904261fb943505bdad5fd153ab546244ccda12389a1b7c12984028c902fcd"
     },
     "cases.jsonl": {
       "bytes": 228939,
