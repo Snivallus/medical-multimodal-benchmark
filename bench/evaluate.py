@@ -77,6 +77,7 @@ C = 信息不足：仅凭这些影像无法判断文本的诊断是否成立
 
 # The conflict task uses letters; the dataset stores the Chinese label.
 CONFLICT_LABELS = {"A": "支持", "B": "反驳", "C": "信息不足"}
+CONFLICT_LETTERS = {label: letter for letter, label in CONFLICT_LABELS.items()}
 
 
 def load_items(path, limit=None, exclude=None):
@@ -110,6 +111,52 @@ def load_items(path, limit=None, exclude=None):
         print(f"[info] excluded {skipped} item(s)", flush=True)
 
     return items
+
+
+def read_jsonl(path):
+    """Load a results file, ignoring a torn last line from an interrupted run."""
+
+    rows = []
+
+    if not Path(path).exists():
+        return rows
+
+    with open(path, encoding="utf-8") as f:
+        for number, line in enumerate(f, 1):
+            line = line.strip()
+
+            if not line:
+                continue
+
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                print(
+                    f"[warn] {path}:{number} is not valid JSON; skipped "
+                    "(a killed run can leave a half-written line)",
+                    flush=True,
+                )
+
+    return rows
+
+
+def write_jsonl(path, rows):
+    """Rewrite a results file atomically.
+
+    A plain ``open(path, "w")`` truncates the file before writing; a crash in
+    the middle would destroy the rows that ``--resume`` is supposed to keep.
+    """
+
+    path = Path(path)
+    temporary = Path(str(path) + ".tmp")
+
+    with open(temporary, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(temporary, path)
 
 
 def load_corpus_text():
@@ -250,7 +297,49 @@ def parse_selection(text):
     return cleaned
 
 
-def evaluate_item(item, variants, model, original_text, retries=3):
+def parse_verdict(text):
+    """Return ``A``/``B``/``C`` for a conflict answer, or ``None``.
+
+    Thinking models put a long chain of thought in front of the answer, so the
+    JSON object is preferred. A model that answers with the Chinese label instead
+    of the letter is still answering the same question; only a reply without a
+    recognisable verdict counts as a parse failure.
+    """
+
+    data = llm.extract_json(text) or {}
+
+    raw = data.get("verdict")
+
+    if raw is not None:
+        value = str(raw).strip()
+
+        if value[:1].upper() in CONFLICT_LABELS:
+            return value[:1].upper()
+
+        for label, letter in CONFLICT_LETTERS.items():
+            if value.startswith(label):
+                return letter
+
+        return None
+
+    # No JSON. Accept a bare letter or label only when that is all the answer
+    # is: a label mentioned somewhere inside a chain of thought is not a verdict.
+    lines = [line.strip() for line in (text or "").strip().splitlines() if line.strip()]
+
+    if lines:
+        tail = lines[-1].strip("。.!！ ")
+
+        if tail[:1].upper() in CONFLICT_LABELS:
+            return tail[:1].upper()
+
+        for label, letter in CONFLICT_LETTERS.items():
+            if tail == label or tail.startswith(label):
+                return letter
+
+    return None
+
+
+def evaluate_item(item, variants, model, original_text, retries=3, max_tokens=256):
     """Evaluate one item on every requested variant."""
 
     correct_ids = item["correct_ids"]
@@ -273,26 +362,32 @@ def evaluate_item(item, variants, model, original_text, retries=3):
 
         messages = build_variant_messages(item, variant, original_text)
         selected = []
+        parsed = []
+        answer = None
+        finish_reason = None
         error = None
+        started = time.time()
 
         for attempt in range(retries):
             try:
-                answer = llm.chat(
+                answer, finish_reason = llm.chat(
                     messages,
                     model=model,
                     temperature=0.0,
-                    max_tokens=256,
-                    timeout=(10, 300),
+                    max_tokens=max_tokens,
+                    timeout=(10, 900),
+                    return_meta=True,
                 )
-                selected = parse_selection(answer)
+                parsed = parse_selection(answer)
                 # Ignore ids that do not exist in this item; they would be
                 # counted as false positives.
-                selected = [option_id for option_id in selected if option_id in valid_ids]
+                selected = [option_id for option_id in parsed if option_id in valid_ids]
                 error = None
                 break
             except Exception as exc:
                 error = str(exc)
-                time.sleep(2 ** attempt)
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
 
         score = medical.score_selection(correct_ids, selected) if selected else 0.0
         hit = medical.main_diagnosis_hit(main_option_id, selected)
@@ -306,6 +401,16 @@ def evaluate_item(item, variants, model, original_text, retries=3):
                 "selected": selected,
                 "score": score,
                 "main_hit": hit,
+                # Raw reply kept for the audit trail: a JSON parse failure is a
+                # zero score under the protocol, so the only way to tell it apart
+                # from a wrong answer later is to keep what the model said.
+                "answer": answer,
+                "parse_ok": bool(parsed),
+                # "length" means the reply hit --max-tokens. A thinking model
+                # can spend the whole budget before it reaches the JSON.
+                "finish_reason": finish_reason,
+                "truncated": finish_reason == "length",
+                "latency_s": round(time.time() - started, 2),
                 # A call that never succeeded must not be counted as a wrong
                 # answer: it would silently deflate the score of that variant.
                 "excluded": error is not None,
@@ -338,6 +443,11 @@ def summarise(records):
     if failed:
         print(f"excluded (call failed): {failed}")
 
+    truncated = sum(1 for record in records if record.get("truncated"))
+
+    if truncated:
+        print(f"truncated by --max-tokens: {truncated}")
+
     # Per-item delta between the photo condition and the masked-text condition.
     photo = {r["item_id"]: r["score"] for r in records if r["variant"] == "photo"}
     text = {r["item_id"]: r["score"] for r in records if r["variant"] == "text_b"}
@@ -355,7 +465,7 @@ def summarise(records):
         print(f"items with delta>0: {positive}/{len(shared)} | delta=0: {zero} | delta<0: {negative}")
 
 
-def evaluate_conflict(record, model, retries=3):
+def evaluate_conflict(record, model, retries=3, max_tokens=8192):
     """Ask one model whether the images support the diagnosis claimed by the text."""
 
     content = [
@@ -374,44 +484,59 @@ def evaluate_conflict(record, model, retries=3):
         {"role": "user", "content": content},
     ]
 
-    verdict = None
+    answer = None
+    finish_reason = None
     error = None
+    started = time.time()
 
     for attempt in range(retries):
         try:
-            answer = llm.chat(
+            answer, finish_reason = llm.chat(
                 messages,
                 model=model,
                 temperature=0.0,
-                max_tokens=128,
-                timeout=(10, 300),
+                max_tokens=max_tokens,
+                timeout=(10, 900),
+                return_meta=True,
             )
-            data = llm.extract_json(answer) or {}
-            raw = str(data.get("verdict") or answer or "").strip().upper()[:1]
-            verdict = CONFLICT_LABELS.get(raw)
             error = None
             break
         except Exception as exc:
             error = str(exc)
-            time.sleep(2 ** attempt)
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+
+    verdict = parse_verdict(answer) if answer is not None else None
 
     return {
         "conflict_id": record["conflict_id"],
         "source_item": record["source_item"],
         "label": record["label"],
         "model": model,
+        # A reply that cannot be parsed is a wrong answer, not a missing one:
+        # dropping it from the denominator would reward a model for ignoring the
+        # answer format. Only a failed call is excluded.
         "predicted": verdict,
-        "correct": verdict == record["label"],
-        "excluded": verdict is None,
+        "predicted_label": CONFLICT_LABELS.get(verdict),
+        "correct": verdict is not None and verdict == CONFLICT_LETTERS.get(record["label"]),
+        "answer": answer,
+        "parse_ok": verdict is not None,
+        "finish_reason": finish_reason,
+        "truncated": finish_reason == "length",
+        "latency_s": round(time.time() - started, 2),
+        "excluded": error is not None,
         "error": error,
     }
 
 
 def summarise_conflicts(records):
-    """Print accuracy and the per-label confusion matrix."""
+    """Print accuracy, per-label precision/recall/F1 and the confusion matrix."""
 
     labels = ["支持", "反驳", "信息不足"]
-    matrix = {label: {other: 0 for other in labels} for label in labels}
+    # A parse failure has no label; it is a wrong answer and needs its own
+    # column so the matrix still adds up to the denominator.
+    columns = labels + ["未解析"]
+    matrix = {label: {other: 0 for other in columns} for label in labels}
     failed = 0
     scored = 0
     correct = 0
@@ -423,7 +548,8 @@ def summarise_conflicts(records):
             continue
 
         scored += 1
-        matrix[record["label"]][record["predicted"]] += 1
+        predicted = record.get("predicted_label") or "未解析"
+        matrix[record["label"]][predicted] += 1
         correct += 1 if record["correct"] else 0
 
     if not scored:
@@ -433,12 +559,31 @@ def summarise_conflicts(records):
     print(f"\nconflict accuracy: {correct/scored:.3f} ({correct}/{scored})")
     print(f"excluded (call failed): {failed}")
 
-    header = "label\\pred  " + "  ".join(f"{label:>6}" for label in labels)
+    truncated = sum(
+        1 for record in records
+        if record.get("truncated") and not record.get("excluded")
+    )
+
+    if truncated:
+        print(f"truncated by --max-tokens: {truncated}")
+
+    header = "label\\pred  " + "  ".join(f"{label:>6}" for label in columns)
     print("\n" + header)
 
     for label in labels:
-        row = "  ".join(f"{matrix[label][other]:>6}" for other in labels)
+        row = "  ".join(f"{matrix[label][other]:>6}" for other in columns)
         print(f"{label:<10} {row}")
+
+    print("\nlabel       precision  recall     f1")
+
+    for label in labels:
+        true_positive = matrix[label][label]
+        predicted_positive = sum(matrix[truth][label] for truth in labels)
+        actual_positive = sum(matrix[label][other] for other in columns)
+        precision = true_positive / predicted_positive if predicted_positive else 0.0
+        recall = true_positive / actual_positive if actual_positive else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        print(f"{label:<10}  {precision:.3f}      {recall:.3f}      {f1:.3f}")
 
 
 def main():
@@ -462,7 +607,7 @@ def main():
         choices=["items", "conflicts"],
         help="items: multiple-answer diagnosis task; conflicts: three-class image/text check",
     )
-    parser.add_argument("--limit", type=int, default=None, help="evaluate the first N items")
+    parser.add_argument("--limit", type=int, default=None, help="evaluate the first N items/records")
     parser.add_argument(
         "--exclude",
         default="",
@@ -472,6 +617,17 @@ def main():
         "--image-root",
         default=str(IMAGE_ROOT),
         help="directory holding the case image folders (defaults to bench/data/images)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=256,
+        help="generation budget per call (raise it for thinking models)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="keep finished rows in --output and only ask the missing ones",
     )
     args = parser.parse_args()
 
@@ -521,27 +677,68 @@ def main():
                 f"({', '.join(absent[:5])}); is {CASES.name} present and complete?"
             )
 
-    all_records = []
-    started = time.time()
-
-    for index, item in enumerate(items, 1):
-        records = evaluate_item(
-            item,
-            variants,
-            args.model,
-            originals.get(item["case_id"], ""),
-        )
-        all_records.extend(records)
-
-        flags = " ".join(f"{r['variant']}={r['score']:.2f}" for r in records)
-        print(f"[{index:3d}/{len(items)}] {item['item_id']} | {flags}")
-
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output, "w", encoding="utf-8") as f:
-        for record in all_records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    existing = read_jsonl(output) if args.resume else []
+
+    # Only a successful call is a finished row: a row marked ``excluded`` is a
+    # failed call and has to be retried on resume.
+    done = {
+        (record["item_id"], record["variant"])
+        for record in existing
+        if not record.get("excluded")
+    }
+
+    if existing:
+        print(f"[resume] {len(done)} finished (item, variant) pair(s) in {output}")
+
+    all_records = list(existing)
+    started = time.time()
+    mode = "a" if args.resume else "w"
+
+    with open(output, mode, encoding="utf-8") as handle:
+
+        for index, item in enumerate(items, 1):
+
+            todo = [name for name in variants if (item["item_id"], name) not in done]
+
+            if not todo:
+                continue
+
+            records = evaluate_item(
+                item,
+                todo,
+                args.model,
+                originals.get(item["case_id"], ""),
+                max_tokens=args.max_tokens,
+            )
+
+            for record in records:
+                all_records.append(record)
+                # Flush per answer: a run of several hundred calls should not
+                # lose everything to one crash.
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+
+            flags = " ".join(f"{r['variant']}={r['score']:.2f}" for r in records)
+            print(f"[{index:3d}/{len(items)}] {item['item_id']} | {flags}", flush=True)
+
+    # A resumed run can hold two rows for the same key (one retried); the later
+    # row wins, but a failed retry must not overwrite an earlier success.
+    deduped = {}
+    for record in all_records:
+        key = (record["item_id"], record["variant"])
+        previous = deduped.get(key)
+
+        if previous is not None and not previous.get("excluded") and record.get("excluded"):
+            continue
+
+        deduped[key] = record
+
+    all_records = list(deduped.values())
+
+    write_jsonl(output, all_records)
 
     summarise(all_records)
     print(f"\nresults -> {output} | {time.time() - started:.0f}s")
@@ -568,22 +765,59 @@ def run_conflicts(args):
 
     print(f"conflict records: {len(records)} | model: {args.model or llm.model_name()}")
 
-    results = []
-    started = time.time()
-
-    for index, record in enumerate(records, 1):
-        result = evaluate_conflict(record, args.model)
-        results.append(result)
-
-        if index % 5 == 0 or index == len(records):
-            print(f"  [{index}/{len(records)}] {record['conflict_id']} -> {result['predicted']}")
-
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output, "w", encoding="utf-8") as f:
-        for result in results:
-            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+    existing = read_jsonl(output) if args.resume else []
+
+    done = {
+        record["conflict_id"]
+        for record in existing
+        if not record.get("excluded")
+    }
+
+    if existing:
+        print(f"[resume] {len(done)} finished conflict row(s) in {output}")
+
+    results = list(existing)
+    started = time.time()
+    mode = "a" if args.resume else "w"
+
+    with open(output, mode, encoding="utf-8") as handle:
+
+        for index, record in enumerate(records, 1):
+
+            if record["conflict_id"] in done:
+                continue
+
+            result = evaluate_conflict(
+                record,
+                args.model,
+                max_tokens=args.max_tokens,
+            )
+            results.append(result)
+            handle.write(json.dumps(result, ensure_ascii=False) + "\n")
+            handle.flush()
+
+            if index % 5 == 0 or index == len(records):
+                print(
+                    f"  [{index}/{len(records)}] {record['conflict_id']} -> {result['predicted']}",
+                    flush=True,
+                )
+
+    deduped = {}
+    for result in results:
+        key = result["conflict_id"]
+        previous = deduped.get(key)
+
+        if previous is not None and not previous.get("excluded") and result.get("excluded"):
+            continue
+
+        deduped[key] = result
+
+    results = list(deduped.values())
+
+    write_jsonl(output, results)
 
     summarise_conflicts(results)
     print(f"\nresults -> {output} | {time.time() - started:.0f}s")

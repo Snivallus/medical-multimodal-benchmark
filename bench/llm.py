@@ -126,7 +126,15 @@ def list_models(timeout=(10, 60)):
     return [model.get("id") for model in data.get("data", [])]
 
 
-def chat(messages, temperature=0.0, max_tokens=1024, timeout=(10, 120), retries=DEFAULT_RETRIES, model=None):
+def chat(
+    messages,
+    temperature=0.0,
+    max_tokens=1024,
+    timeout=(10, 120),
+    retries=DEFAULT_RETRIES,
+    model=None,
+    return_meta=False,
+):
     """Send one chat completion and return the assistant text.
 
     ``model`` overrides the configured model for a single call, which lets the
@@ -134,6 +142,11 @@ def chat(messages, temperature=0.0, max_tokens=1024, timeout=(10, 120), retries=
     stronger one. Transport errors and throttling are retried with an
     exponential backoff; every other 4xx fails immediately because retrying it
     only wastes wall-clock time.
+
+    ``return_meta`` returns ``(text, finish_reason)`` instead of just the text.
+    The finish reason distinguishes a model that answered badly from one whose
+    answer was cut off at ``max_tokens``, which matters when a thinking model
+    shares one budget with its chain of thought.
     """
 
     key = api_key()
@@ -168,9 +181,16 @@ def chat(messages, temperature=0.0, max_tokens=1024, timeout=(10, 120), retries=
                 data = response.json()
 
                 try:
-                    return data["choices"][0]["message"]["content"]
-                except (KeyError, IndexError, TypeError) as error:
+                    choice = data["choices"][0]
+                    content = choice["message"]["content"] or ""
+                    finish_reason = choice.get("finish_reason")
+                except (AttributeError, KeyError, IndexError, TypeError) as error:
                     raise RuntimeError(f"unexpected response shape: {data}") from error
+
+                if return_meta:
+                    return content, finish_reason
+
+                return content
 
             if response.status_code not in RETRYABLE_STATUS:
                 raise RuntimeError(
