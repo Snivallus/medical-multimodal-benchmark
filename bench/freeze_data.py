@@ -138,9 +138,18 @@ def copy_images(images, image_root, data_images, prune, dry_run):
 
 
 def write_cases(cases_index, uids, path, dry_run):
-    """Export the original case records of the shipped items."""
+    """Export the original case records of the shipped items.
+
+    The crawl corpus is not part of the repository, so on a clone without it
+    ``cases_index`` is empty. Writing in that case would truncate the tracked
+    export and silently take ``text_a`` with it, so nothing is written and the
+    existing file is kept.
+    """
 
     records = [cases_index[uid] for uid in uids if uid in cases_index]
+
+    if not records:
+        return 0
 
     if not dry_run:
         with open(path, "w", encoding="utf-8") as f:
@@ -301,6 +310,9 @@ def main():
     exported = write_cases(cases_index, uids, data_dir / "cases.jsonl", args.dry_run)
     manifest = build_manifest(data_dir, images, corpus_path, args.dry_run)
 
+    if not exported:
+        exported = count_lines(data_dir / "cases.jsonl")
+
     print(f"items={len(items)} conflicts={len(conflicts)} cases={exported} images={len(images)}")
     print(f"images copied={copied} unchanged={skipped} pruned={pruned}")
     print(f"dataset size={sum(entry['bytes'] for entry in manifest['images']) / 1048576:.1f} MB (images)")
@@ -311,8 +323,8 @@ def main():
             print(f"  {relative}")
         raise SystemExit(1)
 
-    if not exported:
-        print("[warn] cases.jsonl is empty; the corpus path is probably wrong")
+    if not cases_index:
+        print(f"[info] no crawl corpus at {corpus_path}; kept the existing cases.jsonl as is")
 
 
 if __name__ == "__main__":

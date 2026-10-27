@@ -22,3 +22,9 @@ __pycache__/
 
 # Evaluation runs (bench/data itself is the frozen dataset and is tracked)
 bench/results/
+
+# The upstream crawl project: 11 MB of crawl output plus 800 MB of images, and
+# none of it is needed to reproduce the benchmark. bench/data is self-contained
+# (items, conflicts, the case export and the images it references), so a clone
+# can evaluate without it; only re-crawling or re-deriving the items needs it.
+iiyi_dataset/

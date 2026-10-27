@@ -32,10 +32,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SPIDER = REPO_ROOT / "iiyi_dataset" / "spider"
 
-# The spider is a sibling script, not an installed package.
+# The spider is a sibling script, not an installed package, and the crawl project
+# is deliberately not part of this repository: only the frozen dataset is.
 sys.path.insert(0, str(SPIDER))
 
-import crawl_cases  # noqa: E402
+try:
+    import crawl_cases  # noqa: E402
+except ImportError as error:  # pragma: no cover - only on a clone without the crawl
+    raise SystemExit(
+        f"cannot import the spider from {SPIDER} ({error}).\n"
+        "Re-downloading images needs the iiyi_dataset crawl project next to bench/; "
+        "it is git-ignored, so a fresh clone does not have it."
+    )
 
 DATA = REPO_ROOT / "bench" / "data"
 

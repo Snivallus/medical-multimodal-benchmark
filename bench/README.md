@@ -2,9 +2,14 @@
 
 本目录把 `iiyi_dataset/` 清洗出的病例转成**不定项选择题**，用于 A 组的"中文真实病例多模态诊断推理对抗评测"。
 
-`iiyi_dataset/` 被视为只读数据源：本管线只读 `results/case_with_images.json` 与 `results/images/`，不回写任何文件。
+`iiyi_dataset/` 是上游的爬取与清洗工程（爬虫、931 个病例、4334 张原图），**不进本仓库**（`.gitignore` 里整个忽略，约 11 MB 语料 + 800 MB 图片）。本管线把它当作只读数据源：只读 `results/case_with_images.json` 与 `results/images/`，不回写任何文件。
 
-`data/` 是**已冻结的数据集**，随仓库一起分发：`items.jsonl`、`conflict_items.jsonl`、`cases.jsonl`（原始病例）、`images/`（题目用到的图片）与 `MANIFEST.json`（计数 + 每个文件的 sha256）。服务器上 clone 下来即可直接评测，不必重跑爬虫或出题；`results/` 放评测产物，不进版本库。
+`data/` 是**已冻结的数据集**，随仓库一起分发：`items.jsonl`、`conflict_items.jsonl`、`cases.jsonl`（题目引用的原始病例）、`images/`（题目用到的图片）与 `MANIFEST.json`（计数 + 每个文件的 sha256）。服务器上 clone 下来即可直接评测，不必重跑爬虫或出题；`results/` 放评测产物，不进版本库。
+
+因此有两条边界：
+
+- **评测**（`evaluate.py`、`freeze_data.py --verify`）只依赖 `bench/data/`，没有 `iiyi_dataset/` 也能跑；`text_a` 变体读的是 `data/cases.jsonl`，不是爬取语料。
+- **重建数据集**（`screen_cases.py` / `build_items.py` / `build_conflicts.py` / `refresh_images.py`，以及 `freeze_data.py` 的图片复制）需要本地有 `iiyi_dataset/`；缺了会直接报错，不会悄悄降级。
 
 ---
 
@@ -24,6 +29,8 @@ results/case_with_images.json   （2395 例带图病例，只读）
         │
         └─ 5. evaluate.py       图文 / 纯文本B / 纯文本A 三变体 ──▶ results/eval_results.jsonl
 ```
+
+步骤 1–4 需要本地有 `iiyi_dataset/`（不进仓库）；步骤 5 只需要 `data/`。`MANIFEST.json` 里的 `source.corpus` 记录的是出题时用的那份语料路径与 sha256，那份文件不在仓库里，留着是为了追溯。
 
 ### 1. 筛选（`screen_cases.py`）
 
@@ -66,8 +73,8 @@ results/case_with_images.json   （2395 例带图病例，只读）
 
 出题和配对写完后跑一次，把 `data/` 变成可独立分发、可校验的数据集：
 
-- 把 `items.jsonl` / `conflict_items.jsonl` 引用到的图片从 `iiyi_dataset/results/images/` 复制到 `data/images/<case>/`（当前 85 题 + 254 条冲突题共用 155 张，共 27.8 MB；全量图 4334 张 790 MB 不进仓库）；
-- 导出被引用病例的原始记录到 `data/cases.jsonl`（当前 85 条），审核与报告举例时不必再翻语料；
+- 把 `items.jsonl` / `conflict_items.jsonl` 引用到的图片从 `iiyi_dataset/results/images/` 复制到 `data/images/<case>/`（当前 85 题 + 254 条冲突题共用 155 张，共 27.8 MB；全量图 4334 张 790 MB 不进仓库）。没有 `iiyi_dataset/` 时用 `--manifest-only`：只对 `data/images/` 里已有的图片重算哈希，不复制；
+- 导出被引用病例的原始记录到 `data/cases.jsonl`（当前 85 条），审核与报告举例时不必再翻语料；没有语料时保留现有文件不动；
 - 写 `data/MANIFEST.json`：各文件条数、字节数、sha256，以及语料的 sha256。
 
 `--prune` 会删掉不再被引用的图片；**人工审核改过题目后必须重跑一次**，否则 `images/` 与清单会和题目对不上。

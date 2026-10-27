@@ -37,7 +37,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ITEMS = REPO_ROOT / "bench" / "data" / "items.jsonl"
 CONFLICTS = REPO_ROOT / "bench" / "data" / "conflict_items.jsonl"
 IMAGE_ROOT = REPO_ROOT / "bench" / "data" / "images"
-CORPUS = REPO_ROOT / "iiyi_dataset" / "results" / "case_with_images.json"
+# ``text_a`` needs the verbatim case text. The frozen export of the source
+# records is what ships in the repository, so the crawl corpus is never required
+# to reproduce the benchmark on another machine.
+CASES = REPO_ROOT / "bench" / "data" / "cases.jsonl"
 RESULTS = REPO_ROOT / "bench" / "results" / "eval_results.jsonl"
 
 # Fields that make up the original, verbatim case text of variant ``text_a``.
@@ -111,23 +114,34 @@ def load_items(path, limit=None, exclude=None):
 
 
 def load_corpus_text():
-    """Return ``{case_idx: original case text}`` for variant ``text_a``."""
+    """Return ``{case_idx: original case text}`` for variant ``text_a``.
 
-    if not CORPUS.exists():
-        return {}
-
-    with open(CORPUS, encoding="utf-8") as f:
-        cases = json.load(f)["cases"]
+    Reads the frozen ``data/cases.jsonl`` export rather than the crawl corpus:
+    the corpus is not shipped, and a missing one used to degrade ``text_a`` into
+    ``text_b`` silently, which quietly invalidates the control.
+    """
 
     texts = {}
 
-    for case in cases:
-        parts = []
-        for field in ORIGINAL_FIELDS:
-            value = medical.normalize_whitespace(str(case.get(field, "")))
-            if value:
-                parts.append(f"【{field}】{value}")
-        texts[case["case_idx"]] = "\n".join(parts)
+    if not CASES.exists():
+        return texts
+
+    with open(CASES, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+
+            if not line:
+                continue
+
+            case = json.loads(line)
+            parts = []
+
+            for field in ORIGINAL_FIELDS:
+                value = medical.normalize_whitespace(str(case.get(field, "")))
+                if value:
+                    parts.append(f"【{field}】{value}")
+
+            texts[case["case_idx"]] = "\n".join(parts)
 
     return texts
 
@@ -487,6 +501,17 @@ def main():
 
     if not items:
         raise SystemExit(f"no items in {args.items}")
+
+    if "text_a" in variants:
+        # Without the verbatim text the variant is just text_b under another name,
+        # which would look like a valid control in the results file.
+        absent = [item["item_id"] for item in items if not originals.get(item["case_id"])]
+
+        if absent:
+            raise SystemExit(
+                f"text_a needs the original case text, missing for {len(absent)} item(s) "
+                f"({', '.join(absent[:5])}); is {CASES.name} present and complete?"
+            )
 
     all_records = []
     started = time.time()
