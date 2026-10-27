@@ -1,23 +1,23 @@
 {
-  "generated_at": "2026-10-27T20:53:46+0800",
+  "generated_at": "2026-10-27T21:24:48+0800",
   "counts": {
-    "items": 85,
-    "conflict_items": 254,
-    "cases": 85,
-    "images": 155
+    "items": 84,
+    "conflict_items": 251,
+    "cases": 84,
+    "images": 154
   },
   "files": {
     "items.jsonl": {
-      "bytes": 320792,
-      "sha256": "75eb124a7fc5fa65aa7247dac1222b4827da53323c2fc94993cdc9c29a56fc7f"
+      "bytes": 316499,
+      "sha256": "86f447f0c88208f27f89751f233dfe0213ba2e69046d01381a7c7090bf611fea"
     },
     "conflict_items.jsonl": {
-      "bytes": 338808,
-      "sha256": "8d38435d9a9c106a0acf90ba8b9cc0676c57fbc13128b1c9d487be4d9577afa0"
+      "bytes": 334918,
+      "sha256": "11864d3516515638d8c5acdc1f05ab2ef593f7a1ca67f96b8f8750796d984b17"
     },
     "cases.jsonl": {
-      "bytes": 228939,
-      "sha256": "b1f9da7c7a5fd3982ac7329824d71db3a1677f04f05e37ab088a354eee4d5600"
+      "bytes": 226096,
+      "sha256": "34c0e5020c95577c5d20e635d804028729c2a892a6fda1ae6897de4d9f923fe0"
     }
   },
   "images": [
@@ -615,11 +615,6 @@
       "path": "case_0260/img_01.jpg",
       "bytes": 43151,
       "sha256": "8bf4740fb465944b586605de0a4247d85ef99f4c2f2be9c7bb9a63cce3311e3a"
-    },
-    {
-      "path": "case_0261/img_00.jpg",
-      "bytes": 51494,
-      "sha256": "49b3f2bbf1875a1b920e370333ba7543e7ea8f00f738dd03b42666d09545305e"
     },
     {
       "path": "case_0262/img_00.jpg",
