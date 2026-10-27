@@ -5,11 +5,11 @@ then compared against the gold labels locally. Produced by `bench/triage_images.
 which has since been removed from the repository (as have the raw per-image records);
 this file is the record that is left.
 
-This is the state of `bench/data/images` as committed: the crawled plates still
-carry the journal's printed figure legend, which is why so many items land in
-tier C. An automated crop (`bench/strip_captions.py`, also removed) was tried and
-then reverted in favour of cropping the plates by hand, so the tiers below describe
-the raw images.
+This file describes the plates **before** the hand crop: 61 of the 155 shipped
+images were later cropped by hand (`9cc1a78`) and were not described again, so a
+C-tier row can now point at a caption that is no longer on the file, and an item
+may have dropped a tier. An automated crop (`bench/strip_captions.py`, also
+removed) was tried first and reverted in favour of cropping by hand.
 
 **The descriptions are from the first pass.** Plates that were cropped or swapped by
 hand afterwards have not been re-described — the vision quota is exhausted — so a
@@ -24,7 +24,7 @@ Tiers, worst image in the item decides:
 - **C** 检验报告, 病历文本截图, transcribed text states the conclusion, or the gold
   label is printed on the image — the photo condition is really OCR of the answer.
 
-Items: **46 A / 3 B / 36 C** (85 total). Images: 96 A / 5 B / 54 C (155 total).
+Before the hand crop: items **46 A / 3 B / 36 C** (85 total), images 96 A / 5 B / 54 C (155 total).
 
 ## Items to fix first (C)
 

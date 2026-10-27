@@ -255,6 +255,15 @@ def main():
     data_images = data_dir / "images"
 
     missing = [relative for relative in images if not (data_images / relative).exists()]
+
+    # Fail before writing: a manifest that quietly drops a referenced image looks
+    # complete, passes --verify, and ships a dataset with a hole in it.
+    if missing:
+        print(f"[error] {len(missing)} referenced image(s) missing under {data_images}:")
+        for relative in missing[:10]:
+            print(f"  {relative}")
+        raise SystemExit(1)
+
     pruned = prune_images(images, data_images, args.dry_run) if args.prune else 0
     manifest = build_manifest(data_dir, images, args.dry_run)
 
@@ -276,12 +285,6 @@ def main():
             f"[warn] {len(absent)} item(s) have no row in cases.jsonl; "
             f"variant text_a would fail on them: {', '.join(absent[:5])}"
         )
-
-    if missing:
-        print(f"[error] {len(missing)} referenced image(s) missing under {data_images}:")
-        for relative in missing[:10]:
-            print(f"  {relative}")
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":

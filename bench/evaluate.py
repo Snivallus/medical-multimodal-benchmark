@@ -483,6 +483,15 @@ def main():
     if args.api_key:
         os.environ["LLM_API_KEY"] = args.api_key
 
+    # Without a key every call fails the same way, and the per-variant retry
+    # turns that into a row of zeros marked "excluded" — a missing key looks
+    # like a model that scores 0. Refuse to start instead.
+    if not llm.is_configured():
+        raise SystemExit(
+            "no API key: set LLM_API_KEY (or DEEPSEEK_API_KEY), or pass --api-key. "
+            "A local server that ignores auth still needs a placeholder value."
+        )
+
     if args.mode == "conflicts":
         return run_conflicts(args)
 
