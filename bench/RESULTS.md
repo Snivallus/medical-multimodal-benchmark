@@ -1,8 +1,11 @@
 # 评测报告（框架，待填数）
 
-数据侧已经就绪（`items.jsonl` 100 题、图片已裁掉 61 张图的期刊图注），**评测侧一次都没跑**：
+数据侧已经就绪（`items.jsonl` 100 题、图片为全尺寸原始图版），**评测侧一次都没跑**：
 2026-10-24 API 配额耗尽（剩余 2126 tokens），`evaluate.py` 现在只会报 `excluded (call failed)`。
 下面把两套口径、表结构、依赖关系和三种可能的结论先定下来，配额恢复后只填数。
+
+> 2026-10-27 变更：自动裁图注已整体回退，`bench/data/images` 回到未裁剪的原图版，
+> 图注改为人工裁剪。口径 A 就是**当前仓库状态**，口径 B 等人工裁剪完成后再跑。
 
 ---
 
@@ -10,11 +13,12 @@
 
 | 口径 | n | 图片状态 | 回答什么问题 |
 | --- | --- | --- | --- |
-| **A · 含图注** | 100 | 2024 年爬下来的原始图版，50 道题的图上印着诊断 | 复现"图文没有增益"的旧结果，并证明这个 0 来自图注泄漏 |
-| **B · 去图注** | 88 | 61 张图的图注已裁掉并复验；12 道仍泄露的题剔除 | 影像信息本身有没有增益，这是要写进论文的指标 |
+| **A · 含图注** | 100 | 2024 年爬下来的原始图版，50 道题的图上印着诊断（当前仓库状态） | 复现"图文没有增益"的旧结果，并证明这个 0 来自图注泄漏 |
+| **B · 去图注** | ≤100 | 人工裁掉图注后的图版；裁不掉或仍是报告截图的题剔除 | 影像信息本身有没有增益，这是要写进论文的指标 |
 
-口径 A 的图片只存在于 git 历史（`b574f9c` 之前）和 `.tmp/originals/`；
-`bench/refresh_images.py` 可以把原图重新下回来。口径 B 就是当前仓库里的图。
+口径 A 不需要任何额外准备，`bench/data/images` 现在就是。口径 B 依赖人工裁剪的结果：
+裁完跑 `freeze_data.py --manifest-only`，`triage_images.py --report-only` 重算分档，
+再用 `--exclude` 剔掉仍泄露的题（清单以那时的 `IMAGE_TRIAGE.md` 为准）。
 
 **为什么要两套**：只有把"同一批题、同一套提示词、只差图片版本"的两个 `Δacc` 摆在一起，
 才能说清楚旧结果是数据问题还是模型问题。只报口径 B，审稿人会问"你怎么知道原来不是模型读不出图"。
@@ -37,8 +41,8 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | A | `text_b` | 100 | — | — | — | — | — |
 | A | `photo` | 100 | — | — | — | — | — |
-| B | `text_b` | 88 | — | — | — | — | — |
-| B | `photo` | 88 | — | — | — | — | — |
+| B | `text_b` | ≤100 | — | — | — | — | — |
+| B | `photo` | ≤100 | — | — | — | — | — |
 
 `text_a`（病例原文、保留影像结论）作为难度上界单独报一行，不参与 `Δacc`：
 
@@ -50,20 +54,20 @@
 
 ## 4. 分层（待填）
 
-**4.1 按图片分诊档位**（`IMAGE_TRIAGE.md`：74 A / 14 B / 12 C）
+**4.1 按图片分诊档位**（`IMAGE_TRIAGE.md`：45 A / 4 B / 51 C，C 档人工裁剪后会变）
 
 | 档位 | n | Δacc | 说明 |
 | --- | --- | --- | --- |
-| A（影像/病理/内镜，图上没字） | 74 | — | 预期增益主要应出现在这里 |
-| B（临床照片、术中照、拼图） | 14 | — | 照片可能不构成诊断证据 |
-| C（仍泄露，已从口径 B 剔除） | 12 | — | 只在口径 A 里出现 |
+| A（影像/病理/内镜，图上没字） | 45 | — | 预期增益主要应出现在这里 |
+| B（临床照片、术中照、拼图） | 4 | — | 照片可能不构成诊断证据 |
+| C（图上印着答案，人工裁剪前/后各算一次） | 51 | — | 口径 B 里应是"裁完仍泄露"的那几道 |
 
 **4.2 按图注是否曾经泄露**（口径 A 内部）
 
 | 子集 | n | Δacc（口径 A） | Δacc（口径 B） |
 | --- | --- | --- | --- |
-| 曾经有图注（`caption_crops.json` 有记录） | 61 张 / — 题 | — | — |
-| 从来没有图注 | — 题 | — | — |
+| 有图注（C 档，图注待人工裁掉） | 51 | — | — |
+| 没有图注（A/B 档） | 49 | — | — |
 
 这张表是全文的关键：如果口径 A 里"有图注"的题 `Δacc` 明显高于"没图注"的题，
 就直接证明了泄漏把成绩拉平。
@@ -97,7 +101,7 @@
    唯一的正增益例子正是"图里有真实病灶、图上没写字"的那类。
 2. **口径 B 仍然 ≈ 0** → 图像对 `Qwen3.8-Max` 在这批题上没有增益。这是一个**有价值的负结果**：
    说明多模态模型在真实病例诊断题上并没有用上影像，proposal 里"图像是否必要"的假设不成立。
-   此时不要再调 prompt 去追一个正数，而是把这个负结果讲清楚（并讨论 12 道 C 档的影响）。
+   此时不要再调 prompt 去追一个正数，而是把这个负结果讲清楚（并讨论仍泄露/裁不掉的 C 档题的影响）。
 3. **口径 B 显著为负** → 图像成了干扰（图注之外的视觉噪声、低质量照片、图文不符）。
    需要按 4.1 的 B 档拆开看，很可能是"临床照片/术中照"造成的。
 
@@ -109,15 +113,15 @@
 ## 7. 复现命令
 
 ```bash
-# 口径 A：原始 100 题（需要先把图恢复到裁图注之前）
-python bench/refresh_images.py --workers 3
-python bench/freeze_data.py --manifest-only
+# 口径 A：原始 100 题（当前仓库状态，直接跑）
 python bench/evaluate.py --variants photo,text_b,text_a --model Qwen3.8-Max \
     --output bench/results/eval_A.jsonl
 
-# 口径 B：当前仓库里的 88 题（12 道仍泄露的题剔除）
+# 口径 B：人工裁完图注、重新计哈希、重算分档之后，剔掉仍泄露的题
+python bench/freeze_data.py --manifest-only
+python bench/triage_images.py --report-only
 python bench/evaluate.py --variants photo,text_b,text_a --model Qwen3.8-Max \
-    --exclude "iiyi-0000,iiyi-0013,iiyi-0015,iiyi-0019,iiyi-0044,iiyi-0047,iiyi-0069,iiyi-0074b,iiyi-0075,iiyi-0113,iiyi-0121,iiyi-0050" \
+    --exclude "<IMAGE_TRIAGE.md 第一节里的 C 档 item_id，逗号分隔>" \
     --output bench/results/eval_B.jsonl
 
 # 冲突题
@@ -128,8 +132,8 @@ python bench/evaluate.py --mode conflicts --model Qwen3.8-Max \
 python bench/report_eval.py
 ```
 
-注意：口径 A 跑完要把图恢复成裁过图注的版本（`git checkout bench/data/images` + `git checkout bench/data/MANIFEST.json`），
-否则口径 B 用的就是原图。
+注意：口径 A 必须在**人工裁剪之前**跑（或者裁完再 `git checkout` 回原图），否则 A 用的就不是原图了。
+2026-10-24 那次自动裁剪已整体回退（见 `REVIEW.md` 第八节），所以现在的图就是口径 A 要的图。
 
 ---
 
@@ -139,13 +143,13 @@ python bench/report_eval.py
 
 - [x] 100 题构造、299 条冲突题构造（`build_items.py` / `build_conflicts.py`）
 - [x] 图片全尺寸重下（79 例 / 137 张，`refresh_images.py`）
-- [x] 181 张图逐张分诊（`triage_images.py`，`IMAGE_TRIAGE.md`）
-- [x] 61 张图裁掉期刊图注并逐张复验（`strip_captions.py`，`caption_crops.json`）
-- [x] 12 道仍泄露的题已登记（第 7 节的 `--exclude` 列表）
+- [x] 181 张图逐张分诊（`triage_images.py`，`IMAGE_TRIAGE.md`）：45 A / 4 B / 51 C
+- [x] 自动裁图注跑通并复验（`strip_captions.py`），**但已回退**——边界不精确，改为人工裁剪
 
 **待办**
 
-- [ ] 剩余 7 张图的裁剪（配额恢复后跑 `strip_captions.py`，会把 `0047/0069/0074b/0075/0113/0121` 里的若干道救回来）
+- [ ] 人工裁剪 51 道 C 档题的图注（清单见 `IMAGE_TRIAGE.md` 第一节，附图上文字转录）
+- [ ] 裁完跑 `freeze_data.py --manifest-only` + `triage_images.py --report-only` 重算分档
 - [ ] 口径 A、口径 B 各跑一次全量（约 200 次调用 / 40 分钟 / 40 万 tokens）
 - [ ] 冲突题 299 条评测
 - [ ] `report_eval.py`：汇总 + bootstrap 置信区间
@@ -153,7 +157,7 @@ python bench/report_eval.py
 
 ---
 
-## 附：已经测过的 5 道题（口径 A，裁图注之前）
+## 附：已经测过的 5 道题（口径 A 的原图）
 
 | 题 | `photo` | `text_b` | Δ | 备注 |
 | --- | --- | --- | --- | --- |
