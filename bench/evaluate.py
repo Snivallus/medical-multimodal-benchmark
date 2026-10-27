@@ -29,7 +29,10 @@ import os
 import re
 import sys
 import time
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image
 
 import llm
 import medical
@@ -38,6 +41,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ITEMS = REPO_ROOT / "bench" / "data" / "items.jsonl"
 CONFLICTS = REPO_ROOT / "bench" / "data" / "conflict_items.jsonl"
 IMAGE_ROOT = REPO_ROOT / "bench" / "data" / "images"
+# Optional per-run pixel cap. GLM-4.1V on vLLM 0.11 hangs while encoding
+# images above roughly 4096 visual tokens; a cap keeps that model usable.
+IMAGE_MAX_PIXELS = None
 # ``text_a`` needs the verbatim case text. The frozen export of the source
 # records is what ships in the repository, so the crawl corpus is never required
 # to reproduce the benchmark on another machine.
@@ -233,6 +239,21 @@ def image_payload(paths, image_root=None):
 
         raw = file_path.read_bytes()
         mime = image_mime(raw[:16], file_path)
+
+        if IMAGE_MAX_PIXELS:
+            with Image.open(BytesIO(raw)) as image:
+                width, height = image.size
+                pixels = width * height
+
+                if pixels > IMAGE_MAX_PIXELS:
+                    scale = (IMAGE_MAX_PIXELS / pixels) ** 0.5
+                    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+                    resized = image.convert("RGB").resize(size, Image.LANCZOS)
+                    buffer = BytesIO()
+                    resized.save(buffer, format="JPEG", quality=95)
+                    raw = buffer.getvalue()
+                    mime = "jpeg"
+
         data = base64.b64encode(raw).decode("ascii")
 
         payload.append({"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{data}"}})
@@ -618,7 +639,7 @@ def summarise_conflicts(records):
 
 
 def main():
-    global IMAGE_ROOT
+    global IMAGE_ROOT, IMAGE_MAX_PIXELS
 
     parser = argparse.ArgumentParser(description="Evaluate a model on the built items.")
     parser.add_argument("--items", default=str(ITEMS), help="items JSONL")
@@ -650,6 +671,12 @@ def main():
         help="directory holding the case image folders (defaults to bench/data/images)",
     )
     parser.add_argument(
+        "--max-image-pixels",
+        type=int,
+        default=None,
+        help="downscale images above this many pixels before encoding (GLM workaround)",
+    )
+    parser.add_argument(
         "--max-tokens",
         type=int,
         default=256,
@@ -663,6 +690,7 @@ def main():
     args = parser.parse_args()
 
     IMAGE_ROOT = Path(args.image_root)
+    IMAGE_MAX_PIXELS = args.max_image_pixels
 
     if args.base_url:
         os.environ["LLM_BASE_URL"] = args.base_url

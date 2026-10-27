@@ -286,6 +286,7 @@ def write_manifest(
     max_num_seqs=None,
     max_model_len=None,
     enforce_eager=False,
+    max_image_pixels=None,
 ):
     """Record what was run: model revisions, package versions, git commit."""
 
@@ -338,6 +339,7 @@ def write_manifest(
         "gpu_memory_utilization": gpu_memory_utilization,
         "max_num_seqs": max_num_seqs,
         "enforce_eager": enforce_eager,
+        "max_image_pixels": max_image_pixels,
         # The effective cap, including --max-model-len overrides.
         "max_model_len": max_model_len,
         "variants": ["photo", "text_b", "text_a"],
@@ -387,6 +389,12 @@ def main():
         type=int,
         default=None,
         help="override the per-model context cap (default: MODELS[...]['max_len'])",
+    )
+    parser.add_argument(
+        "--max-image-pixels",
+        type=int,
+        default=None,
+        help="downscale images above this many pixels before encoding (GLM workaround)",
     )
     parser.add_argument(
         "--enforce-eager",
@@ -448,11 +456,17 @@ def main():
             max_num_seqs=args.max_num_seqs,
             max_model_len=args.max_model_len,
             enforce_eager=args.enforce_eager,
+            max_image_pixels=args.max_image_pixels,
         )
 
         def run_model(name):
             log_dir = root / name
             limit = ["--limit", "5"] if args.smoke else []
+            image_cap = (
+                ["--max-image-pixels", str(args.max_image_pixels)]
+                if args.max_image_pixels
+                else []
+            )
             outputs = []
 
             run_evaluate(
@@ -464,6 +478,7 @@ def main():
                     "--max-tokens",
                     str(args.max_tokens),
                     *limit,
+                    *image_cap,
                 ],
                 log_dir,
                 "items",
@@ -474,7 +489,14 @@ def main():
                 run_evaluate(
                     name,
                     log_dir / "conflicts.jsonl",
-                    ["--mode", "conflicts", "--max-tokens", str(args.max_tokens), *limit],
+                    [
+                        "--mode",
+                        "conflicts",
+                        "--max-tokens",
+                        str(args.max_tokens),
+                        *limit,
+                        *image_cap,
+                    ],
                     log_dir,
                     "conflicts",
                 )
