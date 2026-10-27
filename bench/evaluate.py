@@ -82,9 +82,8 @@ CONFLICT_LABELS = {"A": "支持", "B": "反驳", "C": "信息不足"}
 def load_items(path, limit=None, exclude=None):
     """Load items from the JSONL file, optionally skipping some ids.
 
-    ``exclude`` is how the caption-contaminated items are dropped for the
-    clean-image setting: the images themselves can be re-cropped later, but the
-    exclusion list belongs to the experiment, not to the dataset.
+    ``exclude`` drops a few ids from a run without touching the dataset or the
+    manifest, which is handy for a one-off sanity check.
     """
 
     items = []
@@ -467,7 +466,7 @@ def main():
     parser.add_argument(
         "--exclude",
         default="",
-        help="comma separated item ids to skip (the items whose image still prints the answer)",
+        help="comma separated item ids to skip",
     )
     parser.add_argument(
         "--image-root",
