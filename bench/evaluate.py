@@ -149,7 +149,7 @@ def image_mime(data, path):
     """Guess the image type from the file signature, not from the extension.
 
     The crawl output stores everything as ``.jpg`` even when the bytes are PNG
-    (147 of the 181 shipped images), and a data URL with the wrong type is
+    (129 of the 154 shipped images), and a data URL with the wrong type is
     decoded differently — or rejected — by a strict inference server.
     """
 
