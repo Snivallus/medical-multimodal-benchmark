@@ -107,6 +107,7 @@ def start_server(
     gpu_memory_utilization=0.90,
     max_num_seqs=None,
     max_model_len=None,
+    enforce_eager=False,
 ):
     spec = MODELS[name]
     model_path = Path(model_root) / spec["dir"]
@@ -172,6 +173,11 @@ def start_server(
 
     if max_num_seqs is not None:
         command += ["--max-num-seqs", str(max_num_seqs)]
+
+    if enforce_eager:
+        # Sharing a GPU with a training job can leave a captured CUDA graph
+        # waiting on an event that the other context never gets to signal.
+        command.append("--enforce-eager")
 
     handle.write(" ".join(command) + "\n")
     handle.flush()
@@ -279,6 +285,7 @@ def write_manifest(
     gpu_memory_utilization=None,
     max_num_seqs=None,
     max_model_len=None,
+    enforce_eager=False,
 ):
     """Record what was run: model revisions, package versions, git commit."""
 
@@ -330,6 +337,7 @@ def write_manifest(
         "max_tokens": max_tokens,
         "gpu_memory_utilization": gpu_memory_utilization,
         "max_num_seqs": max_num_seqs,
+        "enforce_eager": enforce_eager,
         # The effective cap, including --max-model-len overrides.
         "max_model_len": max_model_len,
         "variants": ["photo", "text_b", "text_a"],
@@ -380,6 +388,11 @@ def main():
         default=None,
         help="override the per-model context cap (default: MODELS[...]['max_len'])",
     )
+    parser.add_argument(
+        "--enforce-eager",
+        action="store_true",
+        help="disable CUDA graphs; slower, but more robust when sharing a GPU",
+    )
     parser.add_argument("--smoke", action="store_true", help="5 items and 5 conflicts only")
     parser.add_argument("--skip-conflicts", action="store_true")
     args = parser.parse_args()
@@ -416,6 +429,7 @@ def main():
                 gpu_memory_utilization=args.gpu_memory_utilization,
                 max_num_seqs=args.max_num_seqs,
                 max_model_len=args.max_model_len,
+                enforce_eager=args.enforce_eager,
             )
             running.append((name, process, handle, log_path))
 
@@ -433,6 +447,7 @@ def main():
             gpu_memory_utilization=args.gpu_memory_utilization,
             max_num_seqs=args.max_num_seqs,
             max_model_len=args.max_model_len,
+            enforce_eager=args.enforce_eager,
         )
 
         def run_model(name):
