@@ -1,0 +1,8 @@
+# Deterministic line endings: MANIFEST.json hashes the dataset files, and git's
+# platform-dependent CRLF rewriting made the same commit produce different bytes
+# (and therefore different hashes) on Windows and on the server.
+bench/data/*.jsonl text eol=lf
+bench/data/*.json  text eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
