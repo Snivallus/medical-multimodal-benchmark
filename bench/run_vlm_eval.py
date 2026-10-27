@@ -99,7 +99,15 @@ def port_is_free(port):
         return sock.connect_ex(("127.0.0.1", port)) != 0
 
 
-def start_server(name, model_root, gpu, log_dir):
+def start_server(
+    name,
+    model_root,
+    gpu,
+    log_dir,
+    gpu_memory_utilization=0.90,
+    max_num_seqs=None,
+    max_model_len=None,
+):
     spec = MODELS[name]
     model_path = Path(model_root) / spec["dir"]
 
@@ -147,9 +155,9 @@ def start_server(name, model_root, gpu, log_dir):
         "--dtype",
         "bfloat16",
         "--max-model-len",
-        str(spec["max_len"]),
+        str(max_model_len or spec["max_len"]),
         "--gpu-memory-utilization",
-        "0.90",
+        str(gpu_memory_utilization),
         "--limit-mm-per-prompt",
         # This benchmark has no video, so the video slot is closed entirely.
         # That also matters for InternVL: with the default video limit its V1
@@ -161,6 +169,9 @@ def start_server(name, model_root, gpu, log_dir):
 
     if spec["trust"]:
         command.append("--trust-remote-code")
+
+    if max_num_seqs is not None:
+        command += ["--max-num-seqs", str(max_num_seqs)]
 
     handle.write(" ".join(command) + "\n")
     handle.flush()
@@ -258,7 +269,17 @@ def run_evaluate(name, output, extra, log_dir, label):
     return log_path
 
 
-def write_manifest(root, names, model_root, max_tokens, limit=None, skip_conflicts=False):
+def write_manifest(
+    root,
+    names,
+    model_root,
+    max_tokens,
+    limit=None,
+    skip_conflicts=False,
+    gpu_memory_utilization=None,
+    max_num_seqs=None,
+    max_model_len=None,
+):
     """Record what was run: model revisions, package versions, git commit."""
 
     def version(package):
@@ -281,7 +302,7 @@ def write_manifest(root, names, model_root, max_tokens, limit=None, skip_conflic
             "path": str(path),
             "revision": revision,
             "port": MODELS[name]["port"],
-            "max_model_len": MODELS[name]["max_len"],
+            "max_model_len": max_model_len or MODELS[name]["max_len"],
         }
 
     try:
@@ -307,6 +328,10 @@ def write_manifest(root, names, model_root, max_tokens, limit=None, skip_conflic
         "torch": version("torch"),
         "transformers": version("transformers"),
         "max_tokens": max_tokens,
+        "gpu_memory_utilization": gpu_memory_utilization,
+        "max_num_seqs": max_num_seqs,
+        # The effective cap, including --max-model-len overrides.
+        "max_model_len": max_model_len,
         "variants": ["photo", "text_b", "text_a"],
         "limit": limit,
         "skip_conflicts": skip_conflicts,
@@ -337,6 +362,24 @@ def main():
         default=os.environ.get("MEDBENCH_MODELS", str(Path.home() / "models" / "medbench")),
     )
     parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=0.90,
+        help="vLLM's per-server GPU memory cap; lower it to share a busy GPU",
+    )
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=None,
+        help="vLLM concurrency cap; 1 is enough for the sequential evaluation",
+    )
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help="override the per-model context cap (default: MODELS[...]['max_len'])",
+    )
     parser.add_argument("--smoke", action="store_true", help="5 items and 5 conflicts only")
     parser.add_argument("--skip-conflicts", action="store_true")
     args = parser.parse_args()
@@ -352,6 +395,12 @@ def main():
     if len(gpus) < len(names):
         raise SystemExit(f"{len(names)} model(s) need {len(names)} GPU id(s)")
 
+    if not 0 < args.gpu_memory_utilization <= 1:
+        raise SystemExit("--gpu-memory-utilization must be in (0, 1]")
+
+    if args.max_num_seqs is not None and args.max_num_seqs < 1:
+        raise SystemExit("--max-num-seqs must be at least 1")
+
     root = RESULTS / "_smoke" if args.smoke else RESULTS
     running = []
 
@@ -359,7 +408,15 @@ def main():
         for name, gpu in zip(names, gpus):
             log_dir = root / name
             log_dir.mkdir(parents=True, exist_ok=True)
-            process, handle, log_path = start_server(name, args.model_root, gpu, log_dir)
+            process, handle, log_path = start_server(
+                name,
+                args.model_root,
+                gpu,
+                log_dir,
+                gpu_memory_utilization=args.gpu_memory_utilization,
+                max_num_seqs=args.max_num_seqs,
+                max_model_len=args.max_model_len,
+            )
             running.append((name, process, handle, log_path))
 
         for name, process, handle, log_path in running:
@@ -373,6 +430,9 @@ def main():
             args.max_tokens,
             limit=5 if args.smoke else None,
             skip_conflicts=args.skip_conflicts,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            max_num_seqs=args.max_num_seqs,
+            max_model_len=args.max_model_len,
         )
 
         def run_model(name):
