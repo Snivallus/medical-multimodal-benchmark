@@ -66,8 +66,8 @@ results/case_with_images.json   （2395 例带图病例，只读）
 
 出题和配对写完后跑一次，把 `data/` 变成可独立分发、可校验的数据集：
 
-- 把 `items.jsonl` / `conflict_items.jsonl` 引用到的图片从 `iiyi_dataset/results/images/` 复制到 `data/images/<case>/`（100 题 + 299 条冲突题共用 181 张，共 15.2 MB；全量图 4334 张 790 MB 不进仓库）；
-- 导出这 100 个病例的原始记录到 `data/cases.jsonl`，审核与报告举例时不必再翻语料；
+- 把 `items.jsonl` / `conflict_items.jsonl` 引用到的图片从 `iiyi_dataset/results/images/` 复制到 `data/images/<case>/`（当前 85 题 + 254 条冲突题共用 155 张，共 27.8 MB；全量图 4334 张 790 MB 不进仓库）；
+- 导出被引用病例的原始记录到 `data/cases.jsonl`（当前 85 条），审核与报告举例时不必再翻语料；
 - 写 `data/MANIFEST.json`：各文件条数、字节数、sha256，以及语料的 sha256。
 
 `--prune` 会删掉不再被引用的图片；**人工审核改过题目后必须重跑一次**，否则 `images/` 与清单会和题目对不上。
@@ -198,13 +198,13 @@ bench/
 ├── IMAGE_TRIAGE.md     # 分诊产出的人工复核清单（A/B/C 三档）
 ├── RESULTS.md          # 评测报告框架（两套口径、待填的表与结论）
 ├── data/               # 冻结数据集（随仓库分发）
-│   ├── items.jsonl             # 100 题
-│   ├── conflict_items.jsonl    # 299 条三分类冲突题
-│   ├── cases.jsonl             # 100 个源病例的原始记录
+│   ├── items.jsonl             # 85 题
+│   ├── conflict_items.jsonl    # 254 条三分类冲突题
+│   ├── cases.jsonl             # 85 个源病例的原始记录
 │   ├── candidates.jsonl        # 筛选结果（700 例，留档）
 │   ├── items_rejected.jsonl    # 被拒题目及原因（留档）
 │   ├── MANIFEST.json           # 计数与 sha256
-│   └── images/<case>/          # 181 张题图（全尺寸原图版，图注待人工裁剪，32.1 MB）
+│   └── images/<case>/          # 155 张题图（全尺寸原图版，图注人工裁剪中，27.8 MB）
 └── results/            # 评测产物（不进版本库）
 ```
 
