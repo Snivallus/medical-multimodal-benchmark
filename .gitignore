@@ -31,6 +31,11 @@ bench/results/_*/
 !bench/results/summary.md
 !bench/results/README.md
 
+# Course presentation decks: HTML visual aids for the midterm, with slide assets
+# copied from the template and figures taken from bench/data/images. Nothing here
+# is needed to reproduce the benchmark, so it stays out of the repo.
+presentation/
+
 # The upstream crawl project: 11 MB of crawl output plus 800 MB of images, and
 # none of it is needed to reproduce the benchmark. bench/data is self-contained
 # (items, conflicts, the case export and the images it references), so a clone
