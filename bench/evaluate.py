@@ -166,6 +166,26 @@ def write_jsonl(path, rows):
     os.replace(temporary, path)
 
 
+def ensure_trailing_newline(path):
+    """Terminate a torn last line before appending a resumed record.
+
+    ``read_jsonl`` skips the fragment, but opening the same file in append mode
+    would glue the next JSON object onto it, creating a second invalid line and
+    losing the newly completed answer if the run is killed again.
+    """
+
+    path = Path(path)
+
+    if not path.exists() or path.stat().st_size == 0:
+        return
+
+    with open(path, "rb+") as handle:
+        handle.seek(-1, os.SEEK_END)
+
+        if handle.read(1) != b"\n":
+            handle.write(b"\n")
+
+
 def load_corpus_text():
     """Return ``{case_idx: original case text}`` for variant ``text_a``.
 
@@ -335,14 +355,17 @@ def parse_selection(text):
             letter = part.strip().strip("。.").upper()[:1]
             # Only real option ids: "中".isalpha() is True, so a bare isalpha()
             # would let non-Latin characters through as answers.
-            if letter in "ABCDEF" and letter not in cleaned:
+            if letter and letter in "ABCDEF" and letter not in cleaned:
                 cleaned.append(letter)
 
     # A reply without JSON sometimes still starts with a letter list.
     if not cleaned:
         head = (text or "").strip()[:40].upper()
-        for letter in "ABCDEF":
-            if head.startswith(letter) and letter not in cleaned:
+
+        for part in re.split(r"[,，、]", head):
+            letter = part.strip().strip("。.").upper()[:1]
+
+            if letter and letter in "ABCDEF" and letter not in cleaned:
                 cleaned.append(letter)
 
     return cleaned
@@ -432,6 +455,9 @@ def evaluate_item(item, variants, model, original_text, retries=3, max_tokens=25
                     temperature=0.0,
                     max_tokens=max_tokens,
                     timeout=(10, 900),
+                    # llm.chat already retries transport errors; without this
+                    # the 3x3 nesting can hold one request for hours.
+                    retries=1,
                     return_meta=True,
                 )
                 parsed = parse_selection(answer)
@@ -555,6 +581,7 @@ def evaluate_conflict(record, model, retries=3, max_tokens=8192):
                 temperature=0.0,
                 max_tokens=max_tokens,
                 timeout=(10, 900),
+                retries=1,
                 return_meta=True,
             )
             error = None
@@ -747,6 +774,9 @@ def main():
 
     existing = read_jsonl(output) if args.resume else []
 
+    if args.resume:
+        ensure_trailing_newline(output)
+
     # Only a successful call is a finished row: a row marked ``excluded`` is a
     # failed call and has to be retried on resume.
     done = {
@@ -834,6 +864,9 @@ def run_conflicts(args):
     output.parent.mkdir(parents=True, exist_ok=True)
 
     existing = read_jsonl(output) if args.resume else []
+
+    if args.resume:
+        ensure_trailing_newline(output)
 
     done = {
         record["conflict_id"]

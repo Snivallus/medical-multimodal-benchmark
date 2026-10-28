@@ -201,6 +201,13 @@ def start_server(
 
 def stop_server(name, process, handle):
     if process.poll() is not None:
+        # The vLLM launcher can exit while an engine child remains in its
+        # process group; try to reap the group even when the leader is gone.
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
         handle.close()
         return
 
@@ -291,6 +298,25 @@ def write_manifest(
     """Record what was run: model revisions, package versions, git commit."""
 
     def version(package):
+        # vLLM is served by the venv interpreter, which can differ from the
+        # interpreter running this harness; ask the venv, not the caller.
+        if PYTHON.exists():
+            try:
+                output = subprocess.check_output(
+                    [
+                        str(PYTHON),
+                        "-c",
+                        "import importlib.metadata as m; print(m.version(%r))" % package,
+                    ],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+
+                if output:
+                    return output
+            except (OSError, subprocess.CalledProcessError):
+                pass
+
         try:
             return metadata.version(package)
         except metadata.PackageNotFoundError:

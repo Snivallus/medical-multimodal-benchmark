@@ -468,11 +468,11 @@ def main():
         text_b = variants.get("text_b", {}).get("score", 0.0)
         photo = variants.get("photo", {}).get("score", 0.0)
         text_a = variants.get("text_a", {}).get("score", 0.0)
-        conflict = row["conflict"]["accuracy"] if row["conflict"] else 0.0
+        conflict = fmt(row["conflict"]["accuracy"]) if row["conflict"] else "n/a"
         lines.append(
             f"| {row['name']} | {fmt(text_b)} | {fmt(photo)} | {fmt(text_a)} | "
             f"{row['delta']:+.3f} | [{row['ci'][0]:+.3f}, {row['ci'][1]:+.3f}] | "
-            f"{row['t3'][1]:+.3f} (n={row['t3'][0]}) | {fmt(conflict)} |"
+            f"{row['t3'][1]:+.3f} (n={row['t3'][0]}) | {conflict} |"
         )
 
     lines.append("")
