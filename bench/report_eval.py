@@ -292,7 +292,13 @@ def model_dirs(results_dir):
     if not root.exists():
         return []
 
-    return sorted(path for path in root.iterdir() if (path / "items.jsonl").exists())
+    # ``_smoke`` is a scratch directory; it must never leak into the published
+    # summary just because it happens to contain an items.jsonl.
+    return sorted(
+        path
+        for path in root.iterdir()
+        if path.is_dir() and not path.name.startswith("_") and (path / "items.jsonl").exists()
+    )
 
 
 def fmt(value):

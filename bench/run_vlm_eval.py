@@ -340,7 +340,7 @@ def write_manifest(
         "max_num_seqs": max_num_seqs,
         "enforce_eager": enforce_eager,
         "max_image_pixels": max_image_pixels,
-        # The effective cap, including --max-model-len overrides.
+        # Explicit override; null means the per-model default recorded below.
         "max_model_len": max_model_len,
         "variants": ["photo", "text_b", "text_a"],
         "limit": limit,

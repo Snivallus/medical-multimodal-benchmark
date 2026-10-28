@@ -60,7 +60,7 @@ $$
 | `InternVL3.5-8B` | $-0.000$ | $[-0.102, +0.098]$ |
 | `GLM-4.1V-9B-Thinking` | $+0.064$ | $[0.000, +0.140]$ |
 
-三个模型的 $\Delta\mathrm{acc}$ 都是正的，但只有 `Qwen3-VL-8B-Instruct` 的 bootstrap 区间不含 $0$；符号检验的 $p$ 值都远大于 $0.05$。$84$ 题中有 $68$–$74$ 题的 $\Delta$ 恰为 $0$，说明“换图”在大多数题上不改变答案，增益集中在少数题。
+三个模型的 $\Delta\mathrm{acc}$ 都是正的，但只有 `Qwen3-VL-8B-Instruct` 的 bootstrap 区间不含 $0$；符号检验的 $p$ 值均大于 $0.05$，不显著。$84$ 题中有 $68$–$74$ 题的 $\Delta$ 恰为 $0$，说明“换图”在大多数题上不改变答案，增益集中在少数题。
 
 `text_a` 明显高于 `photo`，三个模型都是如此（$0.591$–$0.659$ 对 $0.284$–$0.425$）。`text_a` 的原始病历里带着影像结论，这是文本上界，不是图像被用上的证据。
 
@@ -142,10 +142,10 @@ $252$ 条（$84$ 支持 / $84$ 反驳 / $84$ 信息不足），与主表共用�
 ### 与协议不一致之处
 
 - **生成长度**：统一 `--max-tokens 8192`。`GLM-4.1V-9B-Thinking` 没有 thinking 开关，思考链和最终 JSON 共用这个预算；`iiyi-0067` 的 `photo` 在 $8192$ 处被截断，按协议记 $0$ 分。
-- **GLM 图像分辨率**：vLLM 0.11.0 在 GLM-4.1V 的视觉路径上对超过约 $3800$ 个视觉 token 的图片会卡死（$2250 \times 1638$ 必现，$2000 \times 1456$ 正常）。因此 GLM 的图片在编码前被压到最多 $2\,500\,000$ 像素（`--max-image-pixels 2500000`）；Qwen 与 InternVL 使用各自的原生预处理，没有这个上限。跨模型比较时需要考虑这一点。
-- **显存共享**：评测与另一项无关的四卡训练同时进行，每个 vLLM 服务用 `--gpu-memory-utilization 0.45`、`--max-num-seqs 1`。延迟数据不可比，但生成是 greedy，temperature $0$，共享显存不影响答案分布。
+- **GLM 图像分辨率**：vLLM 0.11.0 在 GLM-4.1V 的视觉路径上对超过约 $3800$ 个视觉 token 的图片会卡死（$2250 \times 1638$ 必现，$2000 \times 1456$ 正常）。因此 GLM 的图片在编码前被压到约 $2\,500\,000$ 像素（`--max-image-pixels 2500000`）；Qwen 与 InternVL 使用各自的原生预处理，没有这个上限。跨模型比较时需要考虑这一点。
+- **显存共享**：评测与另一项无关的四卡训练同时进行，每个 vLLM 服务用 `--gpu-memory-utilization 0.45`、`--max-num-seqs 1`。延迟数据不可比；生成是 greedy、temperature $0$，评分口径不因共享显存改变，但未做重复性验证。
 - **`text_a` 缺文**：`iiyi-0049`、`0089`、`0095`、`0104` 的原始病历有字段缺失，`text_a` 文本不完整；未剔除，作为 caveat。
-- **解析失败**：Qwen 有 $4$ 条回答输出 `{"selected": []}`，GLM 有 $1$ 条截断；均按协议记 $0$ 分，未从分母剔除。冲突题没有解析失败。
+- **解析失败**：Qwen 有 $4$ 条回答没有解析出任何选项，GLM 有 $1$ 条截断；均按协议记 $0$ 分，未从分母剔除。冲突题没有解析失败。
 
 ---
 
@@ -171,4 +171,4 @@ bench/.venv/bin/python bench/report_eval.py \
     --results-dir bench/results --out bench/results/summary.md
 ```
 
-逐模型明细在 `bench/results/<model>/items.jsonl` 与 `conflicts.jsonl`，自动汇总在 [`bench/results/summary.md`](</home/zwz_42312/mambaout/medical-multimodal-benchmark/bench/results/summary.md>)；`items.jsonl` 里保留了原始回答、`finish_reason`、`parse_ok` 与延迟，便于复核。
+逐模型明细在 `bench/results/<model>/items.jsonl` 与 `conflicts.jsonl`，自动汇总在 [`bench/results/summary.md`](results/summary.md)；`items.jsonl` 里保留了原始回答、`finish_reason`、`parse_ok` 与延迟，便于复核。

@@ -20,16 +20,18 @@ bench/
 ├── freeze_data.py      # 重算 / 校验 MANIFEST.json
 ├── llm.py              # OpenAI 兼容客户端（重试、JSON 修复、按阶段指定模型）
 ├── medical.py          # 模态识别、诊断解析、合并症分离、评分口径
+├── report_eval.py      # 汇总逐题结果：配对 bootstrap、符号检验、分层表
+├── run_vlm_eval.py     # 本地 vLLM 起服务并批量跑三模型
 ├── data/
 │   ├── items.jsonl             # 84 题
 │   ├── conflict_items.jsonl    # 252 条冲突题
 │   ├── cases.jsonl             # 84 个源病例的原始记录（text_a 用）
 │   ├── MANIFEST.json           # 计数 + 每个文件的 sha256
 │   └── images/<case>/          # 154 张题图，27.7 MB
-├── RESULTS.md          # 评测报告框架（待填的表与结论）
+├── RESULTS.md          # 三模型评测报告
 ├── REVIEW.md           # 数据审查档案（历史，见文末说明）
 ├── TEXT_AUDIT.md       # 逐题文本充分性审查（哪些题不看图也能答，附修复记录）
-└── results/            # 评测产物（不进版本库）
+└── results/            # 最终逐题结果与 summary.md（日志、smoke 本地）
 ```
 
 ---
@@ -123,7 +125,7 @@ python bench/freeze_data.py --verify    # 校验：clone 下来的数据是否�
 - 有题目引用的图不在 `data/images/` 时，重算清单会**直接报错退出、不写 `MANIFEST.json`**，否则清单会悄悄少一张图却照样校验通过。
 - 改了数据就要把 `MANIFEST.json` 一起提交，否则别人 clone 下来校验不过。
 - **`cases.jsonl` 不会自动重导**：增删题目时手工同步它；漏了的话 `freeze_data.py` 会提示有多少题缺原文，`text_a` 也会在开跑前报错。
-- `results/` 是评测产物，不进版本库；`MANIFEST.json` 的 `generated_at` 每次重算都会变，属于正常现象。
+- `results/` 下只入库最终逐题结果与 `summary.md`；`server.log`、`_smoke/` 等本地产物不入库，`MANIFEST.json` 的 `generated_at` 每次重算都会变，属于正常现象。
 
 ---
 
@@ -149,4 +151,4 @@ python bench/freeze_data.py --verify    # 校验：clone 下来的数据是否�
 git show e52a8b6:bench/build_items.py > /tmp/build_items.py
 ```
 
-一句话版本：从 2395 例带图病例里筛出 700 个候选，出 100 题 / 299 条冲突题，人工清理图片后删去 15 个病例的全部图片，定稿为 **85 题 / 254 条 / 155 张图**；文本审查后又删掉 `iiyi-0088`、补齐 `0106` 缺的一条冲突题，现在是 **84 题 / 252 条 / 154 张**（见 `TEXT_AUDIT.md`）。详细的检查项、盲测结果和取舍理由见 [`REVIEW.md`](REVIEW.md)，评测口径与待填的表见 [`RESULTS.md`](RESULTS.md)。
+一句话版本：从 2395 例带图病例里筛出 700 个候选，出 100 题 / 299 条冲突题，人工清理图片后删去 15 个病例的全部图片，定稿为 **85 题 / 254 条 / 155 张图**；文本审查后又删掉 `iiyi-0088`、补齐 `0106` 缺的一条冲突题，现在是 **84 题 / 252 条 / 154 张**（见 `TEXT_AUDIT.md`）。详细的检查项、盲测结果和取舍理由见 [`REVIEW.md`](REVIEW.md)，评测口径与结果见 [`RESULTS.md`](RESULTS.md)。

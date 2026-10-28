@@ -1,3 +1,6 @@
-# Runtime dependency of the evaluation and of the manifest check.
+# Runtime dependencies of the evaluation and of the manifest check.
 # The crawler kept its own list in iiyi_dataset/requirements.txt (not shipped).
 requests>=2.31
+# Only needed for --max-image-pixels (the GLM resizing workaround), but the
+# module is imported by evaluate.py, so a bare install must provide it.
+Pillow>=9.0

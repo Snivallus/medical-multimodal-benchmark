@@ -25,6 +25,7 @@ __pycache__/
 bench/results/**
 !bench/results/
 !bench/results/*/
+bench/results/_*/
 !bench/results/*/items.jsonl
 !bench/results/*/conflicts.jsonl
 !bench/results/summary.md
