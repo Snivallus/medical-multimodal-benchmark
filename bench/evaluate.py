@@ -394,6 +394,10 @@ def parse_verdict(text):
 def evaluate_item(item, variants, model, original_text, retries=3, max_tokens=256):
     """Evaluate one item on every requested variant."""
 
+    # ``--model`` is optional; the request falls back to LLM_MODEL. Resolve it
+    # here too, otherwise every row records ``null`` as the model that produced it.
+    model = model or llm.model_name()
+
     correct_ids = item["correct_ids"]
     valid_ids = {option["id"] for option in item["options"]}
 
@@ -519,6 +523,8 @@ def summarise(records):
 
 def evaluate_conflict(record, model, retries=3, max_tokens=8192):
     """Ask one model whether the images support the diagnosis claimed by the text."""
+
+    model = model or llm.model_name()
 
     content = [
         {
