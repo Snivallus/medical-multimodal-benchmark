@@ -20,8 +20,15 @@ __pycache__/
 *.pyd
 .pylibs/
 
-# Evaluation runs (bench/data itself is the frozen dataset and is tracked)
-bench/results/
+# Evaluation runs: keep the final per-item outputs and summary; smoke tests,
+# server logs, and stale manifests stay local. bench/data itself is tracked.
+bench/results/**
+!bench/results/
+!bench/results/*/
+!bench/results/*/items.jsonl
+!bench/results/*/conflicts.jsonl
+!bench/results/summary.md
+!bench/results/README.md
 
 # The upstream crawl project: 11 MB of crawl output plus 800 MB of images, and
 # none of it is needed to reproduce the benchmark. bench/data is self-contained
