@@ -40,4 +40,4 @@ presentation/
 # none of it is needed to reproduce the benchmark. bench/data is self-contained
 # (items, conflicts, the case export and the images it references), so a clone
 # can evaluate without it; only re-crawling or re-deriving the items needs it.
-iiyi_dataset/
+# iiyi_dataset/
