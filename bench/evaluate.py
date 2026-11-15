@@ -48,7 +48,7 @@ IMAGE_MAX_PIXELS = None
 # records is what ships in the repository, so the crawl corpus is never required
 # to reproduce the benchmark on another machine.
 CASES = REPO_ROOT / "bench" / "data" / "cases.jsonl"
-RESULTS = REPO_ROOT / "bench" / "results" / "eval_results.jsonl"
+RESULTS = REPO_ROOT / "bench" / "results" / "_v2"
 
 # Fields that make up the original, verbatim case text of variant ``text_a``.
 ORIGINAL_FIELDS = ["主诉", "现病史", "既往史", "个人史", "家族史", "查体", "辅助检查"]
@@ -66,17 +66,17 @@ PROMPT = """请根据下面提供的信息，选出所有成立的诊断（可�
 只输出 JSON：{{"selected": ["A"], "reason": "一句话"}}
 """
 
-CONFLICT_PROMPT = """下面是一段病例文本及其给出的诊断，以及配给这段文本的医学影像。
+CONFLICT_PROMPT = """下面是一段病例文本、该病例的一项诊断或影像表现陈述，以及相应的医学影像。
 
-请判断：这些影像是否支持文本给出的诊断？
+请判断：这些影像是否支持该陈述？
 
-A = 支持：影像与文本的诊断一致
-B = 反驳：影像与文本的诊断相互矛盾
-C = 信息不足：仅凭这些影像无法判断文本的诊断是否成立
+A = 支持：图中有可见证据支持该陈述
+B = 反驳：图中有可见证据与该陈述矛盾
+C = 信息不足：图像未提供判断该陈述所需的证据
 
 只输出 JSON：{{"verdict": "A", "why": "20 字内"}}
 
-【文本给出的诊断】{claimed}
+【待核对的陈述】{claimed}
 
 【病例文本】
 {stem}
@@ -677,7 +677,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate a model on the built items.")
     parser.add_argument("--items", default=str(ITEMS), help="items JSONL")
     parser.add_argument("--conflicts", default=None, help="conflict items JSONL (--mode conflicts)")
-    parser.add_argument("--output", default=str(RESULTS), help="per-answer results JSONL")
+    parser.add_argument("--output", help="per-answer JSONL (default: bench/results/_v2/<mode>.jsonl)")
     parser.add_argument("--model", default=None, help="model id (defaults to LLM_MODEL)")
     parser.add_argument("--base-url", default=None, help="override LLM_BASE_URL")
     parser.add_argument("--api-key", default=None, help="override LLM_API_KEY")
@@ -739,6 +739,8 @@ def main():
             "A local server that ignores auth still needs a placeholder value."
         )
 
+    if args.output is None:
+        args.output = str(RESULTS / f"{args.mode}.jsonl")
     if args.mode == "conflicts":
         return run_conflicts(args)
 

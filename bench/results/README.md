@@ -1,5 +1,7 @@
 # 评测结果
 
+> 这是旧版 84 题的结果档案。新版 100 题的病例、题面与冲突标签已更新，见 [`CURATION_V2.md`](../CURATION_V2.md)；这些分数不用于新版。
+
 三个 8B 级 VLM 在冻结测试集上的逐题输出。汇总表见 [`summary.md`](summary.md)，完整分析见 [`../RESULTS.md`](../RESULTS.md)。
 
 ## 文件
