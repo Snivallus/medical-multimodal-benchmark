@@ -7,7 +7,7 @@
 - 100 个源病例的原文（`cases.jsonl`），供 `text_a` 口径使用；
 - 题图数量、总大小与文件哈希见 [`data/MANIFEST.json`](data/MANIFEST.json)。
 
-本版保留或修订 66 道原题，另从上游病例库纳入 34 道新题。逐题取舍、视觉证据与新题来源见 [`CURATION_V2.md`](CURATION_V2.md)。[`REVIEW.md`](REVIEW.md) 和 [`TEXT_AUDIT.md`](TEXT_AUDIT.md) 记录的是旧版审查。
+本版保留或修订 63 道原题，另从上游病例库纳入 37 道新题。逐题取舍、视觉证据与新题来源见 [`CURATION_V2.md`](CURATION_V2.md)。[`REVIEW.md`](REVIEW.md) 和 [`TEXT_AUDIT.md`](TEXT_AUDIT.md) 记录的是旧版审查。
 
 ---
 
@@ -18,6 +18,7 @@ bench/
 ├── requirements.txt
 ├── evaluate.py         # 变体评测（items 模式）与图文冲突（conflicts 模式）
 ├── freeze_data.py      # 重算 / 校验 MANIFEST.json
+├── check_conflict_pairs.py # 核对跨病例配对、金标与来源
 ├── llm.py              # OpenAI 兼容客户端（重试、JSON 修复、按阶段指定模型）
 ├── medical.py          # 模态识别、诊断解析、合并症分离、评分口径
 ├── report_eval.py      # 汇总逐题结果：配对 bootstrap、符号检验、分层表
@@ -27,7 +28,7 @@ bench/
 │   ├── conflict_items.jsonl    # 300 条冲突题
 │   ├── cases.jsonl             # 100 个源病例的原始记录（text_a 用）
 │   ├── MANIFEST.json           # 计数 + 每个文件的 sha256
-│   └── images/<case>/          # 148 张题图，约 52.5 MB
+│   └── images/<case>/          # 181 张图，约 59.3 MB
 ├── CURATION_V2.md      # 本版逐题取舍、来源与标注依据
 ├── RESULTS.md          # 旧版三模型评测报告
 ├── REVIEW.md           # 数据审查档案（历史，见文末说明）
@@ -85,7 +86,7 @@ $$\Delta\mathrm{acc}_i=\mathrm{acc}_i(\text{图文})-\mathrm{acc}_i(\text{纯文
 
 两个纯文本条件都要报：**`text_b`（主指标）**用改写后的文本，图像成为唯一信息源，直接测"到底看没看图"；**`text_a`（严格对照）**照搬病例原文，对应 proposal 字面口径。
 
-冲突题（`--mode conflicts`）报三分类准确率与混淆矩阵（行为真值、列为预测）。新版对每道题固定图像和病例文本，只切换待核对的诊断或影像表现。题图有支持证据标为「支持」；有直接相反的可见证据标为「反驳」；缺必要层面、序列或其他检查时标为「信息不足」。`rationale` 保存标签理由，不随提示发送。
+冲突题（`--mode conflicts`）覆盖全部 100 个诊断病例并报告三分类准确率与混淆矩阵。每个病例提供固定的临床文本和诊断或征象。支持项配同一病例的图，反驳项配能显示相反证据的近邻病例图，信息不足项配来自相关病例但缺少判别证据的图。模型只能看到文字与配图。每组三条共享相同可见文本。
 
 ---
 
@@ -101,13 +102,16 @@ python bench/evaluate.py --limit 5 --variants photo,text_b
 # 图文冲突三分类
 python bench/evaluate.py --mode conflicts
 
+# 冲突题遮图对照，默认写入独立输出文件
+python bench/evaluate.py --mode conflicts --conflict-text-only
+
 # 指定输出文件与端点
 python bench/evaluate.py --variants photo,text_b \
     --output bench/results/eval_local.jsonl \
     --base-url http://localhost:8000/v1 --model Qwen/Qwen3-VL-8B-Instruct
 ```
 
-`--image-root` 可以换一个图片目录（默认 `bench/data/images`），`--items` / `--conflicts` 同理。默认结果目录为 `bench/results/_v2/`。使用 `--resume` 时只接续本版输出；旧版结果位于 `bench/results/`，两版不能混算。用 `report_eval.py --results-dir bench/results/_v2 --out bench/results/_v2/summary.md` 汇总本版的批量运行。
+`--image-root` 可以换一个图片目录（默认 `bench/data/images`），`--items` / `--conflicts` 同理。默认结果目录为 `bench/results/_v2/`。使用 `--resume` 时只接续本版输出；旧版结果位于 `bench/results/`，两版不能混算。用 `python bench/report_eval.py` 汇总本版的批量运行。复现历史汇总使用 `python bench/report_eval.py --version v1`。
 
 ---
 
@@ -120,6 +124,7 @@ python bench/freeze_data.py --dry-run   # 先看会删掉哪些图
 python bench/freeze_data.py             # 重算 MANIFEST.json（哈希 + 计数）
 python bench/freeze_data.py --prune     # 删掉不再被任何题引用的图
 python bench/freeze_data.py --verify    # 校验：clone 下来的数据是否和清单一致
+python bench/check_conflict_pairs.py     # 校验跨病例配对、标签均衡和来源
 ```
 
 - `--verify` 只需要 `data/`，不需要 key；建议在服务器上每次开跑前先跑一次。
@@ -134,7 +139,7 @@ python bench/freeze_data.py --verify    # 校验：clone 下来的数据是否�
 
 - 本版逐题对照题干、源病例及图像，并在必要时裁掉图注、缩小待判断的诊断范围。部分病理拼图和单层影像仍限制可判断的细节。逐题理由见 [`CURATION_V2.md`](CURATION_V2.md)。
 - 新题偏向有清楚结构性证据的影像，骨科题较多；题库分布不代表临床患病率。一些题即使只看文本也可能答对，图像增益须用新版 `photo` / `text_b` 重新测量。
-- 源站个别病例没有独立现病史，`text_a` 使用已有字段。旧版的模型结果和置信区间只适用于旧题库；本版尚未重跑推理。
+- 源站个别病例没有独立现病史，`text_a` 使用已有字段。旧版的模型结果和置信区间只适用于旧题库；本版为 100 例试点，真实模型实测和独立人工复标待完成。
 
 ## 构建过程（历史）
 

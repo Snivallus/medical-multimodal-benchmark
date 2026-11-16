@@ -170,7 +170,7 @@ bench/.venv/bin/python bench/run_vlm_eval.py \
 
 # 汇总
 bench/.venv/bin/python bench/report_eval.py \
-    --results-dir bench/results --out bench/results/summary.md
+    --version v1 --out /tmp/benchmark-v1-summary.md
 ```
 
 逐模型明细在 `bench/results/<model>/items.jsonl` 与 `conflicts.jsonl`，自动汇总在 [`bench/results/summary.md`](results/summary.md)；`items.jsonl` 里保留了原始回答、`finish_reason`、`parse_ok` 与延迟，便于复核。

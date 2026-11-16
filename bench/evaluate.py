@@ -24,6 +24,7 @@ local vLLM server and against a hosted API:
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -66,9 +67,9 @@ PROMPT = """请根据下面提供的信息，选出所有成立的诊断（可�
 只输出 JSON：{{"selected": ["A"], "reason": "一句话"}}
 """
 
-CONFLICT_PROMPT = """下面是一段病例文本、该病例的一项诊断或影像表现陈述，以及相应的医学影像。
+CONFLICT_PROMPT = """下面提供一段病例文本、一项诊断或影像判断，以及一组待核对的医学影像。图文可能来自不同病例。
 
-请判断：这些影像是否支持该陈述？
+请仅根据所给影像，判断它对文本提出的判断提供了什么证据。
 
 A = 支持：图中有可见证据支持该陈述
 B = 反驳：图中有可见证据与该陈述矛盾
@@ -547,7 +548,7 @@ def summarise(records):
         print(f"items with delta>0: {positive}/{len(shared)} | delta=0: {zero} | delta<0: {negative}")
 
 
-def evaluate_conflict(record, model, retries=3, max_tokens=8192):
+def evaluate_conflict(record, model, retries=3, max_tokens=8192, text_only=False):
     """Ask one model whether the images support the diagnosis claimed by the text."""
 
     model = model or llm.model_name()
@@ -561,7 +562,8 @@ def evaluate_conflict(record, model, retries=3, max_tokens=8192):
             ),
         }
     ]
-    content += image_payload(record["images"])
+    if not text_only:
+        content += image_payload(record["images"])
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -671,12 +673,40 @@ def summarise_conflicts(records):
         print(f"{label:<10}  {precision:.3f}      {recall:.3f}      {f1:.3f}")
 
 
+def dataset_identity(path, canonical, **settings):
+    """Identify the exact input rows and the evaluation condition for resume/report."""
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    canonical_digest = hashlib.sha256(canonical.read_bytes()).hexdigest()
+    return {
+        "dataset_version": "v2" if digest == canonical_digest else "custom",
+        "dataset_sha256": digest,
+        **settings,
+    }
+
+
+def resume_records(path, resume, identity):
+    rows = read_jsonl(path) if resume else []
+    if any(any(row.get(key) != value for key, value in identity.items()) for row in rows):
+        raise SystemExit(
+            f"{path} contains results for a different dataset or input condition. "
+            "Set a fresh --output path before running again."
+        )
+    if resume:
+        ensure_trailing_newline(path)
+    return rows
+
+
 def main():
     global IMAGE_ROOT, IMAGE_MAX_PIXELS
 
     parser = argparse.ArgumentParser(description="Evaluate a model on the built items.")
     parser.add_argument("--items", default=str(ITEMS), help="items JSONL")
     parser.add_argument("--conflicts", default=None, help="conflict items JSONL (--mode conflicts)")
+    parser.add_argument(
+        "--conflict-text-only",
+        action="store_true",
+        help="run the conflict task without images as a wording-only control",
+    )
     parser.add_argument("--output", help="per-answer JSONL (default: bench/results/_v2/<mode>.jsonl)")
     parser.add_argument("--model", default=None, help="model id (defaults to LLM_MODEL)")
     parser.add_argument("--base-url", default=None, help="override LLM_BASE_URL")
@@ -721,6 +751,8 @@ def main():
         help="keep finished rows in --output and only ask the missing ones",
     )
     args = parser.parse_args()
+    if args.conflict_text_only and args.mode != "conflicts":
+        parser.error("--conflict-text-only requires --mode conflicts")
 
     IMAGE_ROOT = Path(args.image_root)
     IMAGE_MAX_PIXELS = args.max_image_pixels
@@ -740,7 +772,8 @@ def main():
         )
 
     if args.output is None:
-        args.output = str(RESULTS / f"{args.mode}.jsonl")
+        output_name = "conflicts_text_only" if args.conflict_text_only else args.mode
+        args.output = str(RESULTS / f"{output_name}.jsonl")
     if args.mode == "conflicts":
         return run_conflicts(args)
 
@@ -774,10 +807,8 @@ def main():
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    existing = read_jsonl(output) if args.resume else []
-
-    if args.resume:
-        ensure_trailing_newline(output)
+    identity = dataset_identity(args.items, ITEMS)
+    existing = resume_records(output, args.resume, identity)
 
     # Only a successful call is a finished row: a row marked ``excluded`` is a
     # failed call and has to be retried on resume.
@@ -812,6 +843,7 @@ def main():
             )
 
             for record in records:
+                record.update(identity)
                 all_records.append(record)
                 # Flush per answer: a run of several hundred calls should not
                 # lose everything to one crash.
@@ -865,10 +897,10 @@ def run_conflicts(args):
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    existing = read_jsonl(output) if args.resume else []
-
-    if args.resume:
-        ensure_trailing_newline(output)
+    identity = dataset_identity(
+        path, CONFLICTS, input_mode="text_only" if args.conflict_text_only else "photo"
+    )
+    existing = resume_records(output, args.resume, identity)
 
     done = {
         record["conflict_id"]
@@ -894,7 +926,9 @@ def run_conflicts(args):
                 record,
                 args.model,
                 max_tokens=args.max_tokens,
+                text_only=args.conflict_text_only,
             )
+            result.update(identity)
             results.append(result)
             handle.write(json.dumps(result, ensure_ascii=False) + "\n")
             handle.flush()
