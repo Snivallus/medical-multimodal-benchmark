@@ -36,7 +36,7 @@ VENV = BENCH / ".venv"
 # evaluate.py can import; the system python is not enough.
 PYTHON = VENV / "bin" / "python"
 EVALUATE = BENCH / "evaluate.py"
-RESULTS = BENCH / "results"
+RESULTS = BENCH / "results" / "_v2"
 
 MODELS = {
     "qwen3-vl-8b-instruct": {

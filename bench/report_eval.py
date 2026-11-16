@@ -1,34 +1,31 @@
-"""Aggregate the VLM evaluation runs into the tables used by ``RESULTS.md``.
+"""Aggregate model runs against the dataset version they evaluated.
 
-Reads one directory per model::
-
-    bench/results/<model>/items.jsonl
-    bench/results/<model>/conflicts.jsonl
-
-and writes a Markdown summary. The statistics are fixed by ``RESULTS.md``:
-per-item paired delta between ``photo`` and ``text_b``, a percentile bootstrap
-over items (1000 resamples) and an exact paired sign test. Items judged ``T3``
-in ``TEXT_AUDIT.md`` (the image is necessary) are reported as a sensitivity
-analysis next to the full 84-item run.
-
-    python bench/report_eval.py
-    python bench/report_eval.py --results-dir bench/results --out bench/results/summary.md
+By default, read bench/results/_v2/<model>/{items,conflicts}.jsonl.
+Pass --version v1 to reproduce the archived report against its frozen Git
+snapshot and matching text audit. Only an audit for the selected item set
+can supply a T3 subgroup.
 """
 
 import argparse
 import json
 import random
 import re
+import subprocess
 from collections import defaultdict
-from math import comb
+from hashlib import sha256
+from math import comb, fsum, isclose
 from pathlib import Path
+
+import medical
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH = REPO_ROOT / "bench"
 ITEMS = BENCH / "data" / "items.jsonl"
 CONFLICTS = BENCH / "data" / "conflict_items.jsonl"
 AUDIT = BENCH / "TEXT_AUDIT.md"
-RESULTS = BENCH / "results"
+ARCHIVE_RESULTS = BENCH / "results"
+RESULTS = ARCHIVE_RESULTS / "_v2"
+ARCHIVE_REV = "12b40fe6c67b6c71df100fca3d47bb5c39a38961"
 
 VARIANTS = ["photo", "text_b", "text_a"]
 CONFLICT_LABELS = ["支持", "反驳", "信息不足"]
@@ -37,33 +34,124 @@ BOOTSTRAP_ROUNDS = 1000
 CI = 2.5
 
 
-def load_jsonl(path):
+def parse_jsonl(text, source):
     rows = []
 
-    if not Path(path).exists():
-        return rows
-
-    with open(path, encoding="utf-8") as f:
-        for number, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                print(f"[warn] {path}:{number} is not valid JSON; skipped")
+    for number, line in enumerate(text.split("\n"), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{source}:{number}: invalid JSON: {error.msg}") from error
+        if not isinstance(row, dict):
+            raise ValueError(f"{source}:{number}: expected a JSON object")
+        rows.append(row)
 
     return rows
 
 
-def load_levels():
-    """Return ``{item_id: T1|T2|T3}`` parsed from the audit table."""
+def load_jsonl(path):
+    if not path.exists():
+        return []
+    return parse_jsonl(path.read_text(encoding="utf-8"), path)
 
-    text = AUDIT.read_text(encoding="utf-8")
-    found = dict(re.findall(r"^\| `(iiyi-[0-9a-z]+)` \| \d+ \| (T[123]|BROKEN) \|", text, re.M))
 
-    return found
+def reference_bytes(path, override, version):
+    if override is not None or version == "v2":
+        source = override if override is not None else path
+        return source.read_bytes(), str(source)
+
+    relative = path.relative_to(REPO_ROOT).as_posix()
+    revision_path = f"{ARCHIVE_REV}:{relative}"
+    try:
+        contents = subprocess.run(
+            ["git", "show", revision_path],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (FileNotFoundError, subprocess.CalledProcessError) as error:
+        raise ValueError(
+            f"cannot read archived v1 file {relative} from {ARCHIVE_REV}. "
+            f"Fetch the source commit with `git fetch origin {ARCHIVE_REV}`, "
+            "or supply the archived files with --items, --conflicts and --audit."
+        ) from error
+    return contents, revision_path
+
+
+def load_reference(path, override, version, id_key):
+    contents, source = reference_bytes(path, override, version)
+    rows = parse_jsonl(contents.decode("utf-8"), source)
+    by_id = {row[id_key]: row for row in rows}
+    if not by_id or len(by_id) != len(rows):
+        raise ValueError(f"{source}: expected nonempty data with unique {id_key} values")
+    return by_id, sha256(contents).hexdigest()
+
+
+def load_levels(contents, items):
+    """Read levels only when the entire audit matches the chosen item set."""
+    matches = re.findall(
+        r"^\| `(iiyi-[0-9a-z-]+)` \| (\d+) \| (T[123]|BROKEN) \|",
+        contents.decode("utf-8"),
+        re.M,
+    )
+    levels = {item_id: level for item_id, _, level in matches}
+    if len(levels) != len(matches) or levels.keys() != items.keys():
+        missing = sorted(items.keys() - levels.keys())
+        extra = sorted(levels.keys() - items.keys())
+        raise ValueError(f"audit does not match item IDs (missing: {missing[:5]}, extra: {extra[:5]})")
+    for item_id, size, _ in matches:
+        if int(size) != len(items[item_id]["correct_ids"]):
+            raise ValueError(f"audit answer count does not match the data for {item_id}")
+    return levels
+
+
+def check_provenance(row, version, digest, custom, source, row_id):
+    row_version = row.get("dataset_version")
+    row_digest = row.get("dataset_sha256")
+    if row_version is None and row_digest is None and version == "v1":
+        return  # Archived evaluations predate provenance fields.
+    version_matches = row_version == version or (custom and row_version == "custom")
+    if row_digest != digest or not version_matches:
+        raise ValueError(
+            f"{source}: {row_id} was not evaluated against the selected {version} data. "
+            "Select the matching dataset and results directory, or rerun the evaluation."
+        )
+
+
+def check_item_results(records, items, version, digest, custom, source):
+    for row in records:
+        item_id = row["item_id"]
+        check_provenance(row, version, digest, custom, source, item_id)
+        item = items.get(item_id)
+        if item is None or row["case_id"] != item["case_id"] or row["variant"] not in VARIANTS:
+            raise ValueError(f"{source}: {item_id} does not match the selected diagnosis dataset")
+        selected = row["selected"]
+        options = {option["id"]: option["text"] for option in item["options"]}
+        main_id = next(key for key, value in options.items() if value == item["main_diagnosis"])
+        if (
+            not set(selected) <= options.keys()
+            or not isclose(row["score"], medical.score_selection(item["correct_ids"], selected))
+            or row["main_hit"] != medical.main_diagnosis_hit(main_id, selected)
+        ):
+            raise ValueError(f"{source}: {item_id} score does not match the selected answer key")
+
+
+def check_conflict_results(records, conflicts, version, digest, custom, source):
+    for row in records:
+        row_id = row["conflict_id"]
+        check_provenance(row, version, digest, custom, source, row_id)
+        if row.get("input_mode", "photo") != "photo":
+            raise ValueError(f"{source}: {row_id} is a text-only control, not an image-based conflict result")
+        conflict = conflicts.get(row_id)
+        if (
+            conflict is None
+            or row["source_item"] != conflict["source_item"]
+            or row["label"] != conflict["label"]
+            or row["correct"] != (row["predicted_label"] == conflict["label"])
+        ):
+            raise ValueError(f"{source}: {row_id} does not match the selected conflict dataset")
 
 
 def dedup(records, key):
@@ -84,7 +172,7 @@ def dedup(records, key):
 
 
 def mean(values):
-    return sum(values) / len(values) if values else 0.0
+    return fsum(values) / len(values) if values else 0.0
 
 
 def bootstrap_ci(values, rounds=BOOTSTRAP_ROUNDS, seed=0):
@@ -163,7 +251,7 @@ def tertiles(rows):
     return groups
 
 
-def summarise_items(records, items, levels):
+def summarise_items(records, levels):
     """Return the item-level metrics for one model."""
 
     variants = {}
@@ -188,25 +276,22 @@ def summarise_items(records, items, levels):
 
     pairs = paired(records)
     deltas = [value for _, value in pairs]
-    low, high = bootstrap_ci(deltas)
     p_value, positive, negative = sign_test(deltas)
 
-    t3 = {item_id for item_id, diff in pairs if levels.get(item_id) == "T3"}
-    t3_deltas = [diff for item_id, diff in pairs if item_id in t3]
-    t3_low, t3_high = bootstrap_ci(t3_deltas)
+    t3_deltas = [diff for item_id, diff in pairs if levels.get(item_id) == "T3"]
 
     return {
         "variants": variants,
         "pairs": pairs,
-        "delta": mean(deltas),
-        "ci": (low, high),
+        "delta": mean(deltas) if deltas else None,
+        "ci": bootstrap_ci(deltas) if deltas else None,
         "p": p_value,
         "positive": positive,
         "zero": sum(1 for value in deltas if value == 0),
         "negative": negative,
         "t3_n": len(t3_deltas),
-        "t3_delta": mean(t3_deltas),
-        "t3_ci": (t3_low, t3_high),
+        "t3_delta": mean(t3_deltas) if t3_deltas else None,
+        "t3_ci": bootstrap_ci(t3_deltas) if t3_deltas else None,
     }
 
 
@@ -297,48 +382,86 @@ def model_dirs(results_dir):
     return sorted(
         path
         for path in root.iterdir()
-        if path.is_dir() and not path.name.startswith("_") and (path / "items.jsonl").exists()
+        if path.is_dir()
+        and not path.name.startswith("_")
+        and any((path / f"{mode}.jsonl").is_file() for mode in ("items", "conflicts"))
     )
 
 
 def fmt(value):
-    return f"{value:.3f}"
+    return f"{value:.3f}" if value is not None else "n/a"
+
+
+def signed(value):
+    return f"{value:+.3f}" if value is not None else "n/a"
+
+
+def interval(ci):
+    return f"[{ci[0]:+.3f}, {ci[1]:+.3f}]" if ci is not None else "n/a"
 
 
 def main():
     parser = argparse.ArgumentParser(description="Aggregate the VLM evaluation runs.")
-    parser.add_argument("--results-dir", default=str(RESULTS))
-    parser.add_argument("--out", default=str(RESULTS / "summary.md"))
+    parser.add_argument("--version", choices=("v1", "v2"), default="v2", help="dataset version (default: v2)")
+    parser.add_argument("--results-dir", type=Path, help="directory containing one subdirectory per model")
+    parser.add_argument("--out", type=Path, help="Markdown output (default: <results-dir>/summary.md)")
+    parser.add_argument("--items", type=Path, help="override the selected version's diagnostic items JSONL")
+    parser.add_argument("--conflicts", type=Path, help="override the selected version's conflict items JSONL")
+    parser.add_argument("--audit", type=Path, help="matching text audit Markdown (default: v1 archive only)")
     args = parser.parse_args()
 
-    items = load_jsonl(ITEMS)
-    levels = load_levels()
-    item_ids = {item["item_id"] for item in items}
-
-    if set(levels) != item_ids:
-        missing = sorted(item_ids - set(levels))
-        print(f"[warn] {len(missing)} item(s) missing a T-level: {missing[:5]}")
+    results_dir = args.results_dir or (ARCHIVE_RESULTS if args.version == "v1" else RESULTS)
+    output = args.out or (results_dir / "summary.md")
+    try:
+        items, item_digest = load_reference(ITEMS, args.items, args.version, "item_id")
+        conflict_items, conflict_digest = load_reference(
+            CONFLICTS, args.conflicts, args.version, "conflict_id"
+        )
+        levels = {}
+        if args.audit is not None or args.version == "v1":
+            audit_bytes, _ = reference_bytes(AUDIT, args.audit, args.version)
+            levels = load_levels(audit_bytes, items)
+    except (KeyError, ValueError, OSError) as error:
+        parser.error(str(error))
 
     lines = ["# 评测汇总", ""]
     overview = []
 
-    for directory in model_dirs(args.results_dir):
+    for directory in model_dirs(results_dir):
         name = directory.name
-        records = dedup(load_jsonl(directory / "items.jsonl"), lambda r: (r["item_id"], r["variant"]))
-        conflicts = dedup(load_jsonl(directory / "conflicts.jsonl"), lambda r: r["conflict_id"])
+        item_path = directory / "items.jsonl"
+        conflict_path = directory / "conflicts.jsonl"
+        try:
+            records = load_jsonl(item_path)
+            conflicts = load_jsonl(conflict_path)
+            check_item_results(
+                records, items, args.version, item_digest, args.items is not None, item_path
+            )
+            check_conflict_results(
+                conflicts,
+                conflict_items,
+                args.version,
+                conflict_digest,
+                args.conflicts is not None,
+                conflict_path,
+            )
+        except (KeyError, ValueError, OSError) as error:
+            parser.error(str(error))
+        records = dedup(records, lambda r: (r["item_id"], r["variant"]))
+        conflicts = dedup(conflicts, lambda r: r["conflict_id"])
 
-        if not records:
+        if not records and not conflicts:
             continue
 
-        metrics = summarise_items(records, items, levels)
+        metrics = summarise_items(records, levels)
         conflict_metrics = summarise_conflicts(conflicts) if conflicts else None
 
         variants = metrics["variants"]
 
         print(
-            f"[{name}] photo={fmt(variants.get('photo', {}).get('score', 0))} "
-            f"text_b={fmt(variants.get('text_b', {}).get('score', 0))} "
-            f"delta={metrics['delta']:+.3f}"
+            f"[{name}] photo={fmt(variants.get('photo', {}).get('score'))} "
+            f"text_b={fmt(variants.get('text_b', {}).get('score'))} "
+            f"delta={signed(metrics['delta'])}"
         )
 
         overview.append(
@@ -369,18 +492,26 @@ def main():
                 f"{fmt(row['main'])} | {row['parse_failed']} | {row['truncated']} |"
             )
 
-        lines += [
-            "",
-            f"- $\\Delta\\mathrm{{acc}}$ (`photo` - `text_b`): **{metrics['delta']:+.3f}** "
-            f"(95% CI [{metrics['ci'][0]:+.3f}, {metrics['ci'][1]:+.3f}], "
-            f"sign test $p$ = {metrics['p']:.3f})",
-            f"- $\\Delta > 0$: {metrics['positive']} | $= 0$: {metrics['zero']} | "
-            f"$< 0$: {metrics['negative']} (n = {len(metrics['pairs'])})",
-            f"- T3 子集: $\\Delta\\mathrm{{acc}}$ = {metrics['t3_delta']:+.3f} "
-            f"(95% CI [{metrics['t3_ci'][0]:+.3f}, {metrics['t3_ci'][1]:+.3f}], "
-            f"n = {metrics['t3_n']})",
-            "",
-        ]
+        lines.append("")
+        if metrics["pairs"]:
+            lines += [
+                f"- $\\Delta\\mathrm{{acc}}$ (`photo` - `text_b`): **{signed(metrics['delta'])}** "
+                f"(95% CI {interval(metrics['ci'])}, sign test $p$ = {metrics['p']:.3f})",
+                f"- $\\Delta > 0$: {metrics['positive']} | $= 0$: {metrics['zero']} | "
+                f"$< 0$: {metrics['negative']} (n = {len(metrics['pairs'])})",
+            ]
+        else:
+            lines.append("- `photo` 与 `text_b` 的配对差值不可用（无可评分配对）。")
+        if metrics["t3_n"]:
+            lines.append(
+                f"- T3 子集: $\\Delta\\mathrm{{acc}}$ = {signed(metrics['t3_delta'])} "
+                f"(95% CI {interval(metrics['t3_ci'])}, n = {metrics['t3_n']})"
+            )
+        elif levels:
+            lines.append("- T3 子集不可用（无可评分的 T3 配对）。")
+        else:
+            lines.append("- T3 子集不可用（未提供与本版对应的文本充分性审查）。")
+        lines.append("")
 
         if metrics["pairs"]:
             text_b = {
@@ -389,7 +520,7 @@ def main():
                 if record["variant"] == "text_b" and not record.get("excluded")
             }
             modality_rows, difficulty_rows, length_rows = stratified(
-                items, metrics["pairs"], text_b
+                items.values(), metrics["pairs"], text_b
             )
 
             lines += ["### 分层", "", "| 模态 | n | $\\Delta\\mathrm{acc}$ |", "| --- | ---: | ---: |"]
@@ -456,6 +587,9 @@ def main():
 
             lines.append("")
 
+    if not overview:
+        parser.error(f"no evaluation rows under {results_dir}")
+
     lines += [
         "## 横向对比",
         "",
@@ -465,23 +599,23 @@ def main():
 
     for row in overview:
         variants = row["variants"]
-        text_b = variants.get("text_b", {}).get("score", 0.0)
-        photo = variants.get("photo", {}).get("score", 0.0)
-        text_a = variants.get("text_a", {}).get("score", 0.0)
+        text_b = variants.get("text_b", {}).get("score")
+        photo = variants.get("photo", {}).get("score")
+        text_a = variants.get("text_a", {}).get("score")
         conflict = fmt(row["conflict"]["accuracy"]) if row["conflict"] else "n/a"
+        t3 = f"{signed(row['t3'][1])} (n={row['t3'][0]})" if row["t3"][0] else "n/a"
         lines.append(
             f"| {row['name']} | {fmt(text_b)} | {fmt(photo)} | {fmt(text_a)} | "
-            f"{row['delta']:+.3f} | [{row['ci'][0]:+.3f}, {row['ci'][1]:+.3f}] | "
-            f"{row['t3'][1]:+.3f} (n={row['t3'][0]}) | {conflict} |"
+            f"{signed(row['delta'])} | {interval(row['ci'])} | {t3} | {conflict} |"
         )
 
     lines.append("")
 
     text = "\n".join(lines)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(text, encoding="utf-8")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text, encoding="utf-8", newline="\n")
 
-    print(f"\nsummary -> {args.out}")
+    print(f"\nsummary -> {output}")
 
 
 if __name__ == "__main__":

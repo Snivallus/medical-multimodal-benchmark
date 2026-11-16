@@ -1,5 +1,7 @@
 # 评测结果
 
+> 这是旧版 84 题的结果档案。新版 100 题的病例、题面与冲突标签已更新，见 [`CURATION_V2.md`](../CURATION_V2.md)；这些分数不用于新版。
+
 三个 8B 级 VLM 在冻结测试集上的逐题输出。汇总表见 [`summary.md`](summary.md)，完整分析见 [`../RESULTS.md`](../RESULTS.md)。
 
 ## 文件
@@ -42,7 +44,9 @@ $\Delta\mathrm{acc}$ 是逐题配对差值 `photo - text_b` 的均值；区间�
 ## 复现
 
 ```bash
-python bench/report_eval.py --results-dir bench/results --out /tmp/summary.md
+python bench/report_eval.py --version v1 --out /tmp/summary.md
 ```
 
-脚本还会读取 `bench/data/items.jsonl`、`bench/data/conflict_items.jsonl` 和 `bench/TEXT_AUDIT.md`，因此需要在完整仓库中运行。
+该命令从历史提交 `12b40fe` 读取旧版题库和文本充分性审查。浅克隆缺少该提交时，可先执行 `git fetch origin 12b40fe6c67b6c71df100fca3d47bb5c39a38961`，也可用 `--items`、`--conflicts` 和 `--audit` 指定已有的旧版文件。
+
+直接运行 `python bench/report_eval.py` 会汇总 `bench/results/_v2/` 的新版结果，并校验结果所记录的题库哈希。新版若尚无对应的文本充分性审查，T3 分层显示为不可用。

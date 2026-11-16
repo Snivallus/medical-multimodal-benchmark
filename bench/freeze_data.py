@@ -176,7 +176,7 @@ def build_manifest(data_dir, images, dry_run):
     }
 
     if not dry_run:
-        with open(data_dir / "MANIFEST.json", "w", encoding="utf-8") as f:
+        with open(data_dir / "MANIFEST.json", "w", encoding="utf-8", newline="\n") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
             f.write("\n")
 

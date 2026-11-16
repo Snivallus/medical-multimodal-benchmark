@@ -1,5 +1,7 @@
 # 中文真实病例多模态诊断评测结果
 
+> 这是旧版 84 题的结果档案。新版 100 题的病例、题面与冲突标签已更新，见 [`CURATION_V2.md`](CURATION_V2.md)；这些分数不用于新版。
+
 评测完成于 2026-10-28（Asia/Shanghai）。三个开源 VLM 在同一份冻结数据上各跑一遍：
 
 | 模型 | 参数量 | 服务方式 |
@@ -168,7 +170,7 @@ bench/.venv/bin/python bench/run_vlm_eval.py \
 
 # 汇总
 bench/.venv/bin/python bench/report_eval.py \
-    --results-dir bench/results --out bench/results/summary.md
+    --version v1 --out /tmp/benchmark-v1-summary.md
 ```
 
 逐模型明细在 `bench/results/<model>/items.jsonl` 与 `conflicts.jsonl`，自动汇总在 [`bench/results/summary.md`](results/summary.md)；`items.jsonl` 里保留了原始回答、`finish_reason`、`parse_ok` 与延迟，便于复核。

@@ -2,12 +2,12 @@
 
 `bench/data/` 是已冻结的数据集，随仓库分发，**clone 下来就能评测**：不需要爬虫、不需要上游语料、不需要出题脚本，也不需要任何构建步骤。
 
-- **84 道不定项选择题**：每题 1–3 个正确诊断 + 3 个干扰项（选项 A–F），配 1–4 张影像/病理/内镜/临床照片；
-- **252 条图文冲突三分类题**：同一批图配三种文本（84 支持 / 84 反驳 / 84 信息不足）；
-- 84 个源病例的原文（`cases.jsonl`），供 `text_a` 口径使用；
-- 154 张图，27.7 MB。
+- **100 道不定项选择题**：每题 1–3 个正确诊断 + 3 个干扰项（选项 A–F），配 1–4 张影像/病理/内镜/临床照片；
+- **300 条图文冲突三分类题**：每道诊断题对应三个图文判断（100 支持 / 100 反驳 / 100 信息不足）；
+- 100 个源病例的原文（`cases.jsonl`），供 `text_a` 口径使用；
+- 题图数量、总大小与文件哈希见 [`data/MANIFEST.json`](data/MANIFEST.json)。
 
-数据是怎么挑出来、怎么出题的，见 [`REVIEW.md`](REVIEW.md)（100 题时期的审查档案）和本文末的"构建过程"。
+本版保留或修订 63 道原题，另从上游病例库纳入 37 道新题。逐题取舍、视觉证据与新题来源见 [`CURATION_V2.md`](CURATION_V2.md)。[`REVIEW.md`](REVIEW.md) 和 [`TEXT_AUDIT.md`](TEXT_AUDIT.md) 记录的是旧版审查。
 
 ---
 
@@ -18,17 +18,19 @@ bench/
 ├── requirements.txt
 ├── evaluate.py         # 变体评测（items 模式）与图文冲突（conflicts 模式）
 ├── freeze_data.py      # 重算 / 校验 MANIFEST.json
+├── check_conflict_pairs.py # 核对跨病例配对、金标与来源
 ├── llm.py              # OpenAI 兼容客户端（重试、JSON 修复、按阶段指定模型）
 ├── medical.py          # 模态识别、诊断解析、合并症分离、评分口径
 ├── report_eval.py      # 汇总逐题结果：配对 bootstrap、符号检验、分层表
 ├── run_vlm_eval.py     # 本地 vLLM 起服务并批量跑三模型
 ├── data/
-│   ├── items.jsonl             # 84 题
-│   ├── conflict_items.jsonl    # 252 条冲突题
-│   ├── cases.jsonl             # 84 个源病例的原始记录（text_a 用）
+│   ├── items.jsonl             # 100 题
+│   ├── conflict_items.jsonl    # 300 条冲突题
+│   ├── cases.jsonl             # 100 个源病例的原始记录（text_a 用）
 │   ├── MANIFEST.json           # 计数 + 每个文件的 sha256
-│   └── images/<case>/          # 154 张题图，27.7 MB
-├── RESULTS.md          # 三模型评测报告
+│   └── images/<case>/          # 181 张图，约 59.3 MB
+├── CURATION_V2.md      # 本版逐题取舍、来源与标注依据
+├── RESULTS.md          # 旧版三模型评测报告
 ├── REVIEW.md           # 数据审查档案（历史，见文末说明）
 ├── TEXT_AUDIT.md       # 逐题文本充分性审查（哪些题不看图也能答，附修复记录）
 └── results/            # 最终逐题结果与 summary.md（日志、smoke 本地）
@@ -84,14 +86,14 @@ $$\Delta\mathrm{acc}_i=\mathrm{acc}_i(\text{图文})-\mathrm{acc}_i(\text{纯文
 
 两个纯文本条件都要报：**`text_b`（主指标）**用改写后的文本，图像成为唯一信息源，直接测"到底看没看图"；**`text_a`（严格对照）**照搬病例原文，对应 proposal 字面口径。
 
-冲突题（`--mode conflicts`）报三分类准确率与混淆矩阵（行为真值、列为预测）。
+冲突题（`--mode conflicts`）覆盖全部 100 个诊断病例并报告三分类准确率与混淆矩阵。每个病例提供固定的临床文本和诊断或征象。支持项配同一病例的图，反驳项配能显示相反证据的近邻病例图，信息不足项配来自相关病例但缺少判别证据的图。模型只能看到文字与配图。每组三条共享相同可见文本。
 
 ---
 
 ## 常用命令
 
 ```bash
-# 全量三变体（252 次调用，约 50 分钟）
+# 全量三变体（300 次调用）
 python bench/evaluate.py --variants photo,text_b,text_a
 
 # 冒烟测试：先跑 5 题
@@ -100,13 +102,16 @@ python bench/evaluate.py --limit 5 --variants photo,text_b
 # 图文冲突三分类
 python bench/evaluate.py --mode conflicts
 
+# 冲突题遮图对照，默认写入独立输出文件
+python bench/evaluate.py --mode conflicts --conflict-text-only
+
 # 指定输出文件与端点
 python bench/evaluate.py --variants photo,text_b \
     --output bench/results/eval_local.jsonl \
     --base-url http://localhost:8000/v1 --model Qwen/Qwen3-VL-8B-Instruct
 ```
 
-`--image-root` 可以换一个图片目录（默认 `bench/data/images`），`--items` / `--conflicts` 同理。
+`--image-root` 可以换一个图片目录（默认 `bench/data/images`），`--items` / `--conflicts` 同理。默认结果目录为 `bench/results/_v2/`。使用 `--resume` 时只接续本版输出；旧版结果位于 `bench/results/`，两版不能混算。用 `python bench/report_eval.py` 汇总本版的批量运行。复现历史汇总使用 `python bench/report_eval.py --version v1`。
 
 ---
 
@@ -119,6 +124,7 @@ python bench/freeze_data.py --dry-run   # 先看会删掉哪些图
 python bench/freeze_data.py             # 重算 MANIFEST.json（哈希 + 计数）
 python bench/freeze_data.py --prune     # 删掉不再被任何题引用的图
 python bench/freeze_data.py --verify    # 校验：clone 下来的数据是否和清单一致
+python bench/check_conflict_pairs.py     # 校验跨病例配对、标签均衡和来源
 ```
 
 - `--verify` 只需要 `data/`，不需要 key；建议在服务器上每次开跑前先跑一次。
@@ -131,17 +137,9 @@ python bench/freeze_data.py --verify    # 校验：clone 下来的数据是否�
 
 ## 已知限制
 
-- **图上原本印着图注**：图是从期刊病例页扒下来的**图版**，上面是影像、下面印着文章原配的中文图注。图注已逐张人工裁剪（`9cc1a78`，181 张改了 90 张；自动裁剪试过一轮，因边界不精确已回退），并确认剩下的文字不含诊断答案。题库只有这一套图，不区分"裁前 / 裁后"两种条件。
-- 22 张图长边 < 260 px，且源站没有更大的原图；`case_0136` 裁完只有 195×121（`iiyi-0065`）。这类图在 `photo` 条件里基本读不出征象，是数据本身的短板。
-- **"图是否足以支持该诊断"没有逐张判定**：此前的自动分诊只回答"图上有没有字、是不是影像类"（模型判定，清单已删），人工确认的是图注不含答案，不是"病灶一定可见"。
-- 筛选的规则层只按文本判断模态，**没有读图**；「诊断结果」里诊断数 ≥4 的病例（约 24%）不参与出题。
-- 合并症过滤用的是关键词表，少数以内分泌/心血管为主诊断的病例可能被误删。
-- 改写质量靠"确定性检查 + 逐诊断审计"兜底，审计只判断"能否从文本确立诊断"，不保证改写没有改动临床事实。
-- 图文冲突的三类标签由配对方式决定，同一张图配不同文本是否真的构成"反驳/信息不足"，需要人工确认。
-- **"只看文本能不能答对"没有逐题解决**：`TEXT_AUDIT.md` 的结论是 13/84 题文本即充分——11 题靠化验、暴露史或典型体征，1 题（`iiyi-0044`）靠题干里的 Tullio 征，1 题（`iiyi-0024`）靠免疫球蛋白定量。靠"干扰项露馅"的 27 题已改掉选项（`iiyi-0107` 改的是题干），剩下 13 题要么改题干，要么按"文本可答"子集单独报。T1 只说明信息足够、不说明容易，真实影响要跑 `text_b` 才知道。
-- **`text_a` 有 4 题的原文不完整**：`iiyi-0049` `0089` `0095` `0104` 的源页面本身就没有「现病史」（2026-10-27 重新抓取复核过：`0095` 的主诉位置被一段无关的肝结核讨论占着，`0104` 的病史记在「既往史」里），不是抓取漏了。`text_a` 只能用主诉、查体、辅助检查拼，`0095` 只剩辅助检查。
-
----
+- 本版逐题对照题干、源病例及图像，并在必要时裁掉图注、缩小待判断的诊断范围。部分病理拼图和单层影像仍限制可判断的细节。逐题理由见 [`CURATION_V2.md`](CURATION_V2.md)。
+- 新题偏向有清楚结构性证据的影像，骨科题较多；题库分布不代表临床患病率。一些题即使只看文本也可能答对，图像增益须用新版 `photo` / `text_b` 重新测量。
+- 源站个别病例没有独立现病史，`text_a` 使用已有字段。旧版的模型结果和置信区间只适用于旧题库；本版为 100 例试点，真实模型实测和独立人工复标待完成。
 
 ## 构建过程（历史）
 
@@ -151,4 +149,4 @@ python bench/freeze_data.py --verify    # 校验：clone 下来的数据是否�
 git show e52a8b6:bench/build_items.py > /tmp/build_items.py
 ```
 
-一句话版本：从 2395 例带图病例里筛出 700 个候选，出 100 题 / 299 条冲突题，人工清理图片后删去 15 个病例的全部图片，定稿为 **85 题 / 254 条 / 155 张图**；文本审查后又删掉 `iiyi-0088`、补齐 `0106` 缺的一条冲突题，现在是 **84 题 / 252 条 / 154 张**（见 `TEXT_AUDIT.md`）。详细的检查项、盲测结果和取舍理由见 [`REVIEW.md`](REVIEW.md)，评测口径与结果见 [`RESULTS.md`](RESULTS.md)。
+一句话版本：从 2395 例带图病例里筛出 700 个候选，出 100 题 / 299 条冲突题，人工清理图片后删去 15 个病例的全部图片，定稿为 **85 题 / 254 条 / 155 张图**；文本审查后又删掉 `iiyi-0088`、补齐 `0106` 缺的一条冲突题，形成上一版的 **84 题 / 252 条 / 154 张**（见 `TEXT_AUDIT.md`）。详细的检查项、盲测结果和取舍理由见 [`REVIEW.md`](REVIEW.md)，评测口径与结果见 [`RESULTS.md`](RESULTS.md)。
